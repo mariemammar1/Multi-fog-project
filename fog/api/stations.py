@@ -2,7 +2,7 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-
+from fog.settings import FOG_ID, FOG_ZONE
 from fog.repositories.station_repository import get_all_stations
 from fog.services.station_service import (
     change_station_status,
@@ -65,7 +65,7 @@ def get_capacity():
     Return the current local capacity of this Fog Node.
     """
     return {
-        "fog_id": "fog-a",
-        "zone": "university",
+        "fog_id": FOG_ID,
+        "zone": FOG_ZONE,
         **calculate_local_capacity()
     }

@@ -1,27 +1,28 @@
-from pathlib import Path
 import sqlite3
 
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
-DB_PATH = DATA_DIR / "fog_a.db"
+from fog.settings import DB_PATH, DATA_DIR, FOG_ZONE, STATION_PREFIX
 
 
 def init_db():
     """
-    Create the local database and initialize the stations table.
-    Insert initial stations only if they do not already exist.
+    Initialize the local database of the current Fog.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     with sqlite3.connect(DB_PATH) as connection:
+
         connection.execute("""
             CREATE TABLE IF NOT EXISTS stations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 station_id TEXT NOT NULL UNIQUE,
                 zone TEXT NOT NULL,
                 status TEXT NOT NULL CHECK (
-                    status IN ('AVAILABLE', 'OCCUPIED', 'OUT_OF_SERVICE')
+                    status IN (
+                        'AVAILABLE',
+                        'OCCUPIED',
+                        'OUT_OF_SERVICE'
+                    )
                 ),
                 power_kw REAL NOT NULL CHECK (power_kw > 0),
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -29,8 +30,18 @@ def init_db():
         """)
 
         initial_stations = [
-            ("A-01", "university", "AVAILABLE", 22.0),
-            ("A-02", "university", "OCCUPIED", 22.0),
+            (
+                f"{STATION_PREFIX}-01",
+                FOG_ZONE,
+                "AVAILABLE",
+                22.0
+            ),
+            (
+                f"{STATION_PREFIX}-02",
+                FOG_ZONE,
+                "OCCUPIED",
+                22.0
+            ),
         ]
 
         connection.executemany("""
