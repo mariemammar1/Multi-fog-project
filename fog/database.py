@@ -49,5 +49,26 @@ def init_db():
                 (station_id, zone, status, power_kw)
             VALUES (?, ?, ?, ?)
         """, initial_stations)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS reservations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hold_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                origin_fog TEXT NOT NULL,
+                station_id TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (
+                    status IN ('HOLD', 'CONFIRMED', 'CANCELLED', 'EXPIRED')
+                ),
+                expires_at TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        connection.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS
+            unique_active_station_hold
+            ON reservations(station_id)
+            WHERE status = 'HOLD'
+        """)
 
         connection.commit()
