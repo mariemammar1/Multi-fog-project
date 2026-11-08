@@ -64,11 +64,17 @@ def init_db():
             )
         """)
 
+        # Remove the old index that protects only HOLD reservations.
+        connection.execute("""
+            DROP INDEX IF EXISTS unique_active_station_hold
+        """)
+
+        # Protect stations against duplicate active reservations.
         connection.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS
-            unique_active_station_hold
+            unique_active_station_reservation
             ON reservations(station_id)
-            WHERE status = 'HOLD'
+            WHERE status IN ('HOLD', 'CONFIRMED')
         """)
 
         connection.commit()

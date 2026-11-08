@@ -7,7 +7,14 @@ class HelpRequest(BaseModel):
     required_stations: int = Field(gt=0)
     required_power_kw: float = Field(gt=0)
 
-
+class StationResponse(BaseModel):
+    station_id: str
+    zone: str
+    status: str
+    power_kw: float
+    created_at: str
+    reservation_status: str | None = None
+    is_reservable: bool
 class HelpResponse(BaseModel):
     request_id: str
     origin_fog: str
@@ -44,3 +51,14 @@ class ConfirmResponse(BaseModel):
     proposer_fog: str
     station_ids: list[str]
     status: Literal["CONFIRMED"]
+class CancelRequest(BaseModel):
+    hold_id: str = Field(min_length=1)
+
+
+class CancelResponse(BaseModel):
+    hold_id: str
+    request_id: str
+    origin_fog: str
+    proposer_fog: str
+    station_ids: list[str]
+    status: Literal["CANCELLED"]

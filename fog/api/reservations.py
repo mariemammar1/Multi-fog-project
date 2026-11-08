@@ -3,7 +3,8 @@ from fastapi import APIRouter, HTTPException
 from fog.services.reservation_service import create_temporary_hold
 from shared.schemas import HoldRequest, HoldResponse
 from fog.services.reservation_service import confirm_temporary_hold
-from shared.schemas import ConfirmRequest, ConfirmResponse
+from fog.services.reservation_service import cancel_temporary_hold
+from shared.schemas import ConfirmRequest, ConfirmResponse,CancelRequest, CancelResponse
 
 router = APIRouter(
     prefix="/api/v1/reservations",
@@ -30,6 +31,17 @@ def confirm_reservation(request: ConfirmRequest):
         raise HTTPException(
             status_code=409,
             detail="Reservation cannot be confirmed. It may be expired, cancelled or invalid."
+        )
+
+    return result
+@router.post("/cancel", response_model=CancelResponse)
+def cancel_reservation(request: CancelRequest):
+    result = cancel_temporary_hold(request.hold_id)
+
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Reservation cannot be cancelled. It may be expired or invalid."
         )
 
     return result

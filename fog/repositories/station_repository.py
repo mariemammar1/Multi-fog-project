@@ -5,15 +5,58 @@ from fog.database import DB_PATH
 
 def get_all_stations():
     """
-    Retrieve all stations owned by this Fog Node.
+    Retrieve all stations owned by this Fog,
+    including their active reservation information.
     """
     with sqlite3.connect(DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
 
         rows = connection.execute("""
-            SELECT station_id, zone, status, power_kw, created_at
-            FROM stations
-            ORDER BY station_id
+            SELECT
+                s.station_id,
+                s.zone,
+                s.status,
+                s.power_kw,
+                s.created_at,
+
+                (
+                    SELECT r.status
+                    FROM reservations r
+                    WHERE r.station_id = s.station_id
+                      AND (
+                          r.status = 'CONFIRMED'
+                          OR (
+                              r.status = 'HOLD'
+                              AND julianday(r.expires_at) > julianday('now')
+                          )
+                      )
+                    ORDER BY
+                        CASE r.status
+                            WHEN 'CONFIRMED' THEN 1
+                            WHEN 'HOLD' THEN 2
+                        END
+                    LIMIT 1
+                ) AS reservation_status,
+
+                CASE
+                    WHEN s.status != 'AVAILABLE' THEN 0
+                    WHEN EXISTS (
+                        SELECT 1
+                        FROM reservations r
+                        WHERE r.station_id = s.station_id
+                          AND (
+                              r.status = 'CONFIRMED'
+                              OR (
+                                  r.status = 'HOLD'
+                                  AND julianday(r.expires_at) > julianday('now')
+                              )
+                          )
+                    ) THEN 0
+                    ELSE 1
+                END AS is_reservable
+
+            FROM stations s
+            ORDER BY s.station_id
         """).fetchall()
 
         return [dict(row) for row in rows]

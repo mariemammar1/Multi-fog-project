@@ -3,6 +3,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from fog.settings import FOG_ID, FOG_ZONE
+from shared.schemas import StationResponse
 from fog.repositories.station_repository import get_all_stations
 from fog.services.station_service import (
     change_station_status,
@@ -22,6 +23,10 @@ class StationResponse(BaseModel):
     status: Literal["AVAILABLE", "OCCUPIED", "OUT_OF_SERVICE"]
     power_kw: float
     created_at: str | None
+    reservation_status: Literal[
+        "HOLD", "CONFIRMED", "CANCELLED", "EXPIRED"
+    ] | None = None
+    is_reservable: bool
 
 
 class StationStatusUpdate(BaseModel):

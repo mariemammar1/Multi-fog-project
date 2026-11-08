@@ -62,7 +62,7 @@ def create_hold(request):
                   SELECT 1
                   FROM reservations r
                   WHERE r.station_id = s.station_id
-                    AND r.status = 'HOLD'
+                    AND r.status IN ('HOLD', 'CONFIRMED')
               )
             ORDER BY s.power_kw DESC, s.station_id
         """).fetchall()
@@ -172,4 +172,64 @@ def confirm_hold(hold_id):
             "station_ids": [
                 row["station_id"] for row in reservations
             ]
+        }
+
+def cancel_hold(hold_id):
+    """
+    Cancel an existing reservation and release its stations.
+
+    A HOLD or CONFIRMED reservation can be cancelled.
+    An already cancelled reservation returns the same result.
+    An expired reservation cannot be cancelled.
+    """
+
+    with sqlite3.connect(DB_PATH, timeout=10) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+
+        reservations = connection.execute("""
+            SELECT hold_id, request_id, origin_fog,
+                   station_id, status, expires_at
+            FROM reservations
+            WHERE hold_id = ?
+            ORDER BY station_id
+        """, (hold_id,)).fetchall()
+
+        if not reservations:
+            return None
+
+        # Idempotency: already cancelled.
+        if all(row["status"] == "CANCELLED" for row in reservations):
+            return {
+                "hold_id": hold_id,
+                "request_id": reservations[0]["request_id"],
+                "origin_fog": reservations[0]["origin_fog"],
+                "station_ids": [
+                    row["station_id"] for row in reservations
+                ],
+                "status": "CANCELLED"
+            }
+
+        # Only HOLD or CONFIRMED reservations can be cancelled.
+        if not all(
+            row["status"] in ("HOLD", "CONFIRMED")
+            for row in reservations
+        ):
+            return None
+
+        connection.execute("""
+            UPDATE reservations
+            SET status = 'CANCELLED'
+            WHERE hold_id = ?
+              AND status IN ('HOLD', 'CONFIRMED')
+        """, (hold_id,))
+
+        return {
+            "hold_id": hold_id,
+            "request_id": reservations[0]["request_id"],
+            "origin_fog": reservations[0]["origin_fog"],
+            "station_ids": [
+                row["station_id"] for row in reservations
+            ],
+            "status": "CANCELLED"
         }
