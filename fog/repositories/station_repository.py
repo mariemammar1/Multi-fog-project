@@ -78,9 +78,14 @@ def update_station_status(station_id: str, new_status: str):
         return cursor.rowcount > 0
 
 
+
 def get_station_capacity():
     """
-    Calculate the local station capacity of this Fog.
+    Calculate the real local station capacity.
+
+    A station is available only if:
+    - Its physical status is AVAILABLE.
+    - It has no active HOLD or CONFIRMED reservation.
     """
     with sqlite3.connect(DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
@@ -88,17 +93,59 @@ def get_station_capacity():
         row = connection.execute("""
             SELECT
                 COUNT(*) AS total_stations,
-                SUM(CASE WHEN status = 'AVAILABLE' THEN 1 ELSE 0 END)
-                    AS available_stations,
-                SUM(CASE WHEN status = 'OCCUPIED' THEN 1 ELSE 0 END)
-                    AS occupied_stations,
-                SUM(CASE WHEN status = 'OUT_OF_SERVICE' THEN 1 ELSE 0 END)
-                    AS out_of_service_stations,
+
+                SUM(
+                    CASE
+                        WHEN s.status = 'AVAILABLE'
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM reservations r
+                            WHERE r.station_id = s.station_id
+                              AND (
+                                  r.status = 'CONFIRMED'
+                                  OR (
+                                      r.status = 'HOLD'
+                                      AND julianday(r.expires_at) > julianday('now')
+                                  )
+                              )
+                        )
+                        THEN 1 ELSE 0
+                    END
+                ) AS available_stations,
+
+                SUM(
+                    CASE WHEN s.status = 'OCCUPIED'
+                    THEN 1 ELSE 0 END
+                ) AS occupied_stations,
+
+                SUM(
+                    CASE WHEN s.status = 'OUT_OF_SERVICE'
+                    THEN 1 ELSE 0 END
+                ) AS out_of_service_stations,
+
                 COALESCE(
-                    SUM(CASE WHEN status = 'AVAILABLE' THEN power_kw ELSE 0 END),
+                    SUM(
+                        CASE
+                            WHEN s.status = 'AVAILABLE'
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM reservations r
+                                WHERE r.station_id = s.station_id
+                                  AND (
+                                      r.status = 'CONFIRMED'
+                                      OR (
+                                          r.status = 'HOLD'
+                                          AND julianday(r.expires_at) > julianday('now')
+                                      )
+                                  )
+                            )
+                            THEN s.power_kw ELSE 0
+                        END
+                    ),
                     0
                 ) AS available_power_kw
-            FROM stations
+
+            FROM stations s
         """).fetchone()
 
         return dict(row)

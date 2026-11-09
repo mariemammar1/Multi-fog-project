@@ -1,29 +1,27 @@
+
+import os
 import httpx
 
 from fog.settings import FOG_ID
 from fog.services.proposal_selection_service import select_best_proposal
 
 
+# URLs configurable via environment variables.
+# Default values are used during local development.
 FOG_URLS = {
-    "fog-a": "http://127.0.0.1:8001",
-    "fog-b": "http://127.0.0.1:8002",
-    "fog-c": "http://127.0.0.1:8003",
+    "fog-a": os.getenv("FOG_A_URL", "http://127.0.0.1:8001"),
+    "fog-b": os.getenv("FOG_B_URL", "http://127.0.0.1:8002"),
+    "fog-c": os.getenv("FOG_C_URL", "http://127.0.0.1:8003"),
 }
 
 
 def send_help_request_to_peers(request):
-    """
-    Send a help request to other Fog Nodes,
-    collect their responses and select the best proposal.
-    """
-
     responses = []
     errors = []
 
     request_data = request.model_dump()
 
     for peer_fog, peer_url in FOG_URLS.items():
-
         if peer_fog == FOG_ID:
             continue
 
@@ -35,7 +33,6 @@ def send_help_request_to_peers(request):
                 json=request_data,
                 timeout=5.0
             )
-
             response.raise_for_status()
             responses.append(response.json())
 
@@ -45,7 +42,6 @@ def send_help_request_to_peers(request):
                 "error": str(error)
             })
 
-    # Select the best proposal.
     best_proposal = select_best_proposal(
         responses=responses,
         required_stations=request.required_stations,
