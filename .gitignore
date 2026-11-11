@@ -49,3 +49,6 @@ data/*.sqlite
 data/*.sqlite3
 data/*.db-journal
 
+
+# Local backups
+backup/

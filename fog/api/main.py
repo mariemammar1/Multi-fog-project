@@ -7,6 +7,7 @@ from fog.settings import FOG_ID, FOG_ZONE
 from fog.api.stations import router as stations_router
 from fog.api.cooperation import router as cooperation_router
 from fog.api.reservations import router as reservations_router
+from fog.api.piles import router as piles_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -24,6 +25,7 @@ app = FastAPI(
 app.include_router(stations_router)
 app.include_router(cooperation_router)
 app.include_router(reservations_router)
+app.include_router(piles_router)
 
 
 @app.get("/health")

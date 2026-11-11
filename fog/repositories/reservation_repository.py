@@ -1,3 +1,4 @@
+
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -7,7 +8,7 @@ from fog.settings import DB_PATH
 
 def create_hold(request):
     """
-    Atomically reserve the required available stations
+    Atomically reserve the required available piles
     in this Fog's local database.
     """
 
@@ -21,84 +22,97 @@ def create_hold(request):
     with sqlite3.connect(DB_PATH, timeout=10) as connection:
         connection.row_factory = sqlite3.Row
 
-        # Prevent concurrent transactions from selecting
-        # the same available stations.
+        # Lock the database to prevent concurrent reservations.
         connection.execute("BEGIN IMMEDIATE")
 
-        # Expire old temporary reservations.
+        # Expire temporary reservations whose TTL has elapsed.
         connection.execute("""
             UPDATE reservations
             SET status = 'EXPIRED'
             WHERE status = 'HOLD'
-              AND expires_at <= ?
+              AND julianday(expires_at) <= julianday(?)
         """, (now_text,))
 
-        # Idempotency: if this request already has an active HOLD,
-        # return the existing reservation instead of creating another.
+        # Prevent a repeated request from creating another HOLD.
         existing = connection.execute("""
             SELECT hold_id, request_id, origin_fog,
-                   station_id, expires_at
+                   pile_id, expires_at, status
             FROM reservations
             WHERE request_id = ?
-              AND status = 'HOLD'
-            ORDER BY station_id
-        """, (request.request_id,)).fetchall()
+              AND origin_fog = ?
+              AND status IN ('HOLD', 'CONFIRMED')
+            ORDER BY pile_id
+        """, (request.request_id, request.origin_fog)).fetchall()
 
         if existing:
+            # An existing confirmed request must not reserve again.
+            if existing[0]["status"] == "CONFIRMED":
+                return None
+
             return {
                 "hold_id": existing[0]["hold_id"],
                 "request_id": request.request_id,
-                "origin_fog": existing[0]["origin_fog"],
-                "station_ids": [row["station_id"] for row in existing],
+                "origin_fog": request.origin_fog,
+                "pile_ids": [row["pile_id"] for row in existing],
                 "expires_at": existing[0]["expires_at"]
             }
 
-        # Find stations not already reserved by an active HOLD.
+        # Find available and reservable piles.
         available = connection.execute("""
-            SELECT s.station_id, s.power_kw
-            FROM stations s
-            WHERE s.status = 'AVAILABLE'
+            SELECT p.pile_id, p.power_kw
+            FROM piles p
+            WHERE p.status = 'AVAILABLE'
+              AND p.is_reservable = 1
               AND NOT EXISTS (
                   SELECT 1
                   FROM reservations r
-                  WHERE r.station_id = s.station_id
-                    AND r.status IN ('HOLD', 'CONFIRMED')
+                  WHERE r.pile_id = p.pile_id
+                    AND (
+                        r.status = 'CONFIRMED'
+                        OR (
+                            r.status = 'HOLD'
+                            AND julianday(r.expires_at) > julianday(?)
+                        )
+                    )
               )
-            ORDER BY s.power_kw DESC, s.station_id
-        """).fetchall()
+            ORDER BY p.power_kw DESC, p.pile_id
+        """, (now_text,)).fetchall()
 
         selected = []
         total_power = 0.0
 
-        for station in available:
-            if len(selected) >= request.required_stations:
+        for pile in available:
+            if len(selected) >= request.required_piles:
                 break
 
-            selected.append(station)
-            total_power += station["power_kw"]
+            selected.append(pile)
+            total_power += pile["power_kw"]
 
-        # Do not create a reservation if the requirements
-        # cannot be satisfied.
+        # Check both the required number of piles and power.
         if (
-            len(selected) < request.required_stations
+            len(selected) < request.required_piles
             or total_power < request.required_power_kw
         ):
             return None
 
         hold_id = str(uuid4())
 
-        for station in selected:
+        for pile in selected:
             connection.execute("""
                 INSERT INTO reservations (
-                    hold_id, request_id, origin_fog,
-                    station_id, status, expires_at
+                    hold_id,
+                    request_id,
+                    origin_fog,
+                    pile_id,
+                    status,
+                    expires_at
                 )
                 VALUES (?, ?, ?, ?, 'HOLD', ?)
             """, (
                 hold_id,
                 request.request_id,
                 request.origin_fog,
-                station["station_id"],
+                pile["pile_id"],
                 expires_at
             ))
 
@@ -106,9 +120,11 @@ def create_hold(request):
             "hold_id": hold_id,
             "request_id": request.request_id,
             "origin_fog": request.origin_fog,
-            "station_ids": [station["station_id"] for station in selected],
+            "pile_ids": [pile["pile_id"] for pile in selected],
             "expires_at": expires_at
         }
+
+
 def confirm_hold(hold_id):
     """
     Confirm an existing temporary reservation.
@@ -124,33 +140,33 @@ def confirm_hold(hold_id):
 
         reservations = connection.execute("""
             SELECT hold_id, request_id, origin_fog,
-                   station_id, status, expires_at
+                   pile_id, status, expires_at
             FROM reservations
             WHERE hold_id = ?
-            ORDER BY station_id
+            ORDER BY pile_id
         """, (hold_id,)).fetchall()
 
         if not reservations:
             return None
 
-        # Idempotency: an already confirmed reservation
-        # returns the same result.
         if all(row["status"] == "CONFIRMED" for row in reservations):
             return {
                 "hold_id": hold_id,
                 "request_id": reservations[0]["request_id"],
                 "origin_fog": reservations[0]["origin_fog"],
-                "station_ids": [
-                    row["station_id"] for row in reservations
+                "pile_ids": [
+                    row["pile_id"] for row in reservations
                 ]
             }
 
-        # All stations must still be on HOLD.
         if not all(row["status"] == "HOLD" for row in reservations):
             return None
 
-        # Check expiration.
-        if any(row["expires_at"] <= now_text for row in reservations):
+        # Check whether the temporary reservation has expired.
+        if any(
+            datetime.fromisoformat(row["expires_at"]) <= now
+            for row in reservations
+        ):
             connection.execute("""
                 UPDATE reservations
                 SET status = 'EXPIRED'
@@ -158,7 +174,6 @@ def confirm_hold(hold_id):
             """, (hold_id,))
             return None
 
-        # Confirm all stations belonging to this HOLD.
         connection.execute("""
             UPDATE reservations
             SET status = 'CONFIRMED'
@@ -169,18 +184,15 @@ def confirm_hold(hold_id):
             "hold_id": hold_id,
             "request_id": reservations[0]["request_id"],
             "origin_fog": reservations[0]["origin_fog"],
-            "station_ids": [
-                row["station_id"] for row in reservations
+            "pile_ids": [
+                row["pile_id"] for row in reservations
             ]
         }
 
+
 def cancel_hold(hold_id):
     """
-    Cancel an existing reservation and release its stations.
-
-    A HOLD or CONFIRMED reservation can be cancelled.
-    An already cancelled reservation returns the same result.
-    An expired reservation cannot be cancelled.
+    Cancel an existing HOLD or CONFIRMED reservation.
     """
 
     with sqlite3.connect(DB_PATH, timeout=10) as connection:
@@ -189,28 +201,26 @@ def cancel_hold(hold_id):
 
         reservations = connection.execute("""
             SELECT hold_id, request_id, origin_fog,
-                   station_id, status, expires_at
+                   pile_id, status
             FROM reservations
             WHERE hold_id = ?
-            ORDER BY station_id
+            ORDER BY pile_id
         """, (hold_id,)).fetchall()
 
         if not reservations:
             return None
 
-        # Idempotency: already cancelled.
         if all(row["status"] == "CANCELLED" for row in reservations):
             return {
                 "hold_id": hold_id,
                 "request_id": reservations[0]["request_id"],
                 "origin_fog": reservations[0]["origin_fog"],
-                "station_ids": [
-                    row["station_id"] for row in reservations
+                "pile_ids": [
+                    row["pile_id"] for row in reservations
                 ],
                 "status": "CANCELLED"
             }
 
-        # Only HOLD or CONFIRMED reservations can be cancelled.
         if not all(
             row["status"] in ("HOLD", "CONFIRMED")
             for row in reservations
@@ -228,8 +238,8 @@ def cancel_hold(hold_id):
             "hold_id": hold_id,
             "request_id": reservations[0]["request_id"],
             "origin_fog": reservations[0]["origin_fog"],
-            "station_ids": [
-                row["station_id"] for row in reservations
+            "pile_ids": [
+                row["pile_id"] for row in reservations
             ],
             "status": "CANCELLED"
         }
