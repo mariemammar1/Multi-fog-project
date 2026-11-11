@@ -28,3 +28,24 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Dataset original (ne pas pousser sur GitHub)
+UrbanEVDataset/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Local databases
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-journal
+
