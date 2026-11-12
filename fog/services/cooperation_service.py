@@ -1,6 +1,6 @@
 
 from fog.repositories.pile_repository import get_all_piles, get_pile_capacity
-from fog.settings import FOG_ID
+from fog.settings import FOG_ID, FOG_ZONE
 
 
 def evaluate_help_request(request):
@@ -54,7 +54,7 @@ def evaluate_help_request(request):
         "request_id": request.request_id,
         "origin_fog": request.origin_fog,
         "proposer_fog": FOG_ID,
-        "zone": FOG_ID,
+        "zone": FOG_ZONE,
         "status": status,
         "available_piles": available_piles,
         "available_power_kw": available_power_kw,

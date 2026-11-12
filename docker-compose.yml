@@ -1,0 +1,48 @@
+services:
+  fog-a:
+    build: .
+    container_name: fog-a
+    ports:
+      - "8001:8000"
+    environment:
+      FOG_ID: fog-a
+      FOG_ZONE: fog-a
+      FOG_DB_PATH: /app/data/fog_a.db
+      FOG_A_URL: http://fog-a:8000
+      FOG_B_URL: http://fog-b:8000
+      FOG_C_URL: http://fog-c:8000
+    volumes:
+      - ./docker-data/fog-a:/app/data
+    restart: unless-stopped
+
+  fog-b:
+    build: .
+    container_name: fog-b
+    ports:
+      - "8002:8000"
+    environment:
+      FOG_ID: fog-b
+      FOG_ZONE: fog-b
+      FOG_DB_PATH: /app/data/fog_b.db
+      FOG_A_URL: http://fog-a:8000
+      FOG_B_URL: http://fog-b:8000
+      FOG_C_URL: http://fog-c:8000
+    volumes:
+      - ./docker-data/fog-b:/app/data
+    restart: unless-stopped
+
+  fog-c:
+    build: .
+    container_name: fog-c
+    ports:
+      - "8003:8000"
+    environment:
+      FOG_ID: fog-c
+      FOG_ZONE: fog-c
+      FOG_DB_PATH: /app/data/fog_c.db
+      FOG_A_URL: http://fog-a:8000
+      FOG_B_URL: http://fog-b:8000
+      FOG_C_URL: http://fog-c:8000
+    volumes:
+      - ./docker-data/fog-c:/app/data
+    restart: unless-stopped

@@ -10,8 +10,8 @@ from fog.repositories import reservation_repository
 @pytest.fixture
 def temporary_db(tmp_path, monkeypatch):
     """
-    Create an isolated SQLite database for each test.
-    The real Fog databases are never modified.
+    Create an isolated SQLite database using the current
+    stations / piles / reservations architecture.
     """
     db_path = tmp_path / "test_fog.db"
 
@@ -22,13 +22,31 @@ def temporary_db(tmp_path, monkeypatch):
     )
 
     with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+
         connection.execute("""
             CREATE TABLE stations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                station_id TEXT NOT NULL UNIQUE,
-                zone TEXT NOT NULL,
-                status TEXT NOT NULL,
-                power_kw REAL NOT NULL
+                station_id TEXT PRIMARY KEY,
+                longitude REAL NOT NULL,
+                latitude REAL NOT NULL,
+                slow_count INTEGER NOT NULL DEFAULT 0,
+                fast_count INTEGER NOT NULL DEFAULT 0,
+                charge_count INTEGER NOT NULL DEFAULT 0,
+                tazid TEXT,
+                fog_id TEXT NOT NULL
+            )
+        """)
+
+        connection.execute("""
+            CREATE TABLE piles (
+                pile_id TEXT PRIMARY KEY,
+                station_id TEXT NOT NULL,
+                power_kw REAL NOT NULL,
+                pile_type TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'AVAILABLE',
+                is_reservable INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY (station_id)
+                    REFERENCES stations(station_id)
             )
         """)
 
@@ -38,22 +56,38 @@ def temporary_db(tmp_path, monkeypatch):
                 hold_id TEXT NOT NULL,
                 request_id TEXT NOT NULL,
                 origin_fog TEXT NOT NULL,
-                station_id TEXT NOT NULL,
+                pile_id TEXT NOT NULL,
                 status TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (pile_id)
+                    REFERENCES piles(pile_id)
             )
         """)
 
-        connection.executemany("""
+        connection.execute("""
+            CREATE UNIQUE INDEX unique_active_pile_reservation
+            ON reservations(pile_id)
+            WHERE status IN ('HOLD', 'CONFIRMED')
+        """)
+
+        connection.execute("""
             INSERT INTO stations (
-                station_id, zone, status, power_kw
+                station_id, longitude, latitude, fog_id
             )
             VALUES (?, ?, ?, ?)
+        """, ("ST-01", 10.75, 34.74, "fog-a"))
+
+        connection.executemany("""
+            INSERT INTO piles (
+                pile_id, station_id, power_kw,
+                pile_type, status, is_reservable
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
         """, [
-            ("A-01", "university", "AVAILABLE", 22.0),
-            ("A-02", "university", "AVAILABLE", 22.0),
-            ("A-03", "university", "OCCUPIED", 22.0),
+            ("P-01", "ST-01", 22.0, "AC", "AVAILABLE", 1),
+            ("P-02", "ST-01", 22.0, "AC", "AVAILABLE", 1),
+            ("P-03", "ST-01", 22.0, "AC", "OCCUPIED", 1),
         ])
 
     return db_path
@@ -63,7 +97,7 @@ def test_create_hold_success(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-001",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -73,15 +107,15 @@ def test_create_hold_success(temporary_db):
     assert result is not None
     assert result["request_id"] == "test-request-001"
     assert result["origin_fog"] == "fog-b"
-    assert len(result["station_ids"]) == 2
+    assert len(result["pile_ids"]) == 2
     assert result["expires_at"] is not None
 
     with sqlite3.connect(temporary_db) as connection:
         rows = connection.execute("""
-            SELECT station_id, status
+            SELECT pile_id, status
             FROM reservations
             WHERE hold_id = ?
-            ORDER BY station_id
+            ORDER BY pile_id
         """, (result["hold_id"],)).fetchall()
 
     assert len(rows) == 2
@@ -91,7 +125,7 @@ def test_create_hold_is_idempotent(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-002",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -101,7 +135,7 @@ def test_create_hold_is_idempotent(temporary_db):
 
     # Both calls must return the same reservation.
     assert first_result["hold_id"] == second_result["hold_id"]
-    assert first_result["station_ids"] == second_result["station_ids"]
+    assert first_result["pile_ids"] == second_result["pile_ids"]
 
     with sqlite3.connect(temporary_db) as connection:
         count = connection.execute("""
@@ -117,7 +151,7 @@ def test_confirm_hold_success(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-003",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -130,7 +164,7 @@ def test_confirm_hold_success(temporary_db):
 
     assert result is not None
     assert result["hold_id"] == hold_result["hold_id"]
-    assert result["station_ids"] == hold_result["station_ids"]
+    assert result["pile_ids"] == hold_result["pile_ids"]
 
     with sqlite3.connect(temporary_db) as connection:
         rows = connection.execute("""
@@ -146,7 +180,7 @@ def test_confirm_hold_is_idempotent(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-004",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -177,7 +211,7 @@ def test_expired_hold_cannot_be_confirmed(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-005",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -215,7 +249,7 @@ def test_cancel_hold_success(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-006",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -228,7 +262,7 @@ def test_cancel_hold_success(temporary_db):
     assert result is not None
     assert result["hold_id"] == hold_id
     assert result["status"] == "CANCELLED"
-    assert result["station_ids"] == hold_result["station_ids"]
+    assert result["pile_ids"] == hold_result["pile_ids"]
 
     with sqlite3.connect(temporary_db) as connection:
         rows = connection.execute("""
@@ -244,7 +278,7 @@ def test_cancel_hold_is_idempotent(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-007",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -272,7 +306,7 @@ def test_cancelled_hold_cannot_be_confirmed(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-008",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -302,7 +336,7 @@ def test_cancelled_stations_can_be_reserved_again(temporary_db):
     first_request = SimpleNamespace(
         request_id="test-request-009",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -320,7 +354,7 @@ def test_cancelled_stations_can_be_reserved_again(temporary_db):
     second_request = SimpleNamespace(
         request_id="test-request-010",
         origin_fog="fog-c",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -329,13 +363,13 @@ def test_cancelled_stations_can_be_reserved_again(temporary_db):
 
     assert second_hold is not None
     assert second_hold["hold_id"] != first_hold["hold_id"]
-    assert set(second_hold["station_ids"]) == set(first_hold["station_ids"])
+    assert set(second_hold["pile_ids"]) == set(first_hold["pile_ids"])
 
 def test_confirmed_reservation_can_be_cancelled(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-011",
         origin_fog="fog-b",
-        required_stations=2,
+        required_piles=2,
         required_power_kw=40,
         ttl_seconds=120
     )
@@ -352,7 +386,7 @@ def test_confirmed_reservation_can_be_cancelled(temporary_db):
 
     assert cancellation is not None
     assert cancellation["status"] == "CANCELLED"
-    assert cancellation["station_ids"] == hold_result["station_ids"]
+    assert cancellation["pile_ids"] == hold_result["pile_ids"]
 
     with sqlite3.connect(temporary_db) as connection:
         rows = connection.execute("""
@@ -368,7 +402,7 @@ def test_create_hold_fails_when_capacity_is_insufficient(temporary_db):
     request = SimpleNamespace(
         request_id="test-request-012",
         origin_fog="fog-b",
-        required_stations=3,
+        required_piles=3,
         required_power_kw=60,
         ttl_seconds=120
     )
