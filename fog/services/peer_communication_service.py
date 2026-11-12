@@ -6,8 +6,6 @@ from fog.settings import FOG_ID
 from fog.services.proposal_selection_service import select_best_proposal
 
 
-# URLs configurable via environment variables.
-# Default values are used during local development.
 FOG_URLS = {
     "fog-a": os.getenv("FOG_A_URL", "http://127.0.0.1:8001"),
     "fog-b": os.getenv("FOG_B_URL", "http://127.0.0.1:8002"),
@@ -16,12 +14,19 @@ FOG_URLS = {
 
 
 def send_help_request_to_peers(request):
+    """
+    Send a help request to all other Fog Nodes
+    and collect their capacity proposals.
+    """
+
     responses = []
     errors = []
 
     request_data = request.model_dump()
 
     for peer_fog, peer_url in FOG_URLS.items():
+
+        # Do not contact the current Fog.
         if peer_fog == FOG_ID:
             continue
 
@@ -33,6 +38,7 @@ def send_help_request_to_peers(request):
                 json=request_data,
                 timeout=5.0
             )
+
             response.raise_for_status()
             responses.append(response.json())
 
@@ -44,7 +50,7 @@ def send_help_request_to_peers(request):
 
     best_proposal = select_best_proposal(
         responses=responses,
-        required_stations=request.required_stations,
+        required_piles=request.required_piles,
         required_power_kw=request.required_power_kw
     )
 

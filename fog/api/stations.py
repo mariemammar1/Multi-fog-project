@@ -3,7 +3,6 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from fog.settings import FOG_ID, FOG_ZONE
-from shared.schemas import StationResponse
 from fog.repositories.station_repository import get_all_stations
 from fog.services.station_service import (
     change_station_status,
