@@ -11,8 +11,10 @@ services:
       FOG_A_URL: http://fog-a:8000
       FOG_B_URL: http://fog-b:8000
       FOG_C_URL: http://fog-c:8000
+      CHRONOS_URL: http://chronos-ml:8000
     volumes:
       - ./docker-data/fog-a:/app/data
+      - ./ml-service/data/fog-a.csv:/app/data/forecast.csv:ro
     restart: unless-stopped
 
   fog-b:
@@ -27,8 +29,10 @@ services:
       FOG_A_URL: http://fog-a:8000
       FOG_B_URL: http://fog-b:8000
       FOG_C_URL: http://fog-c:8000
+      CHRONOS_URL: http://chronos-ml:8000
     volumes:
       - ./docker-data/fog-b:/app/data
+      - ./ml-service/data/fog-b.csv:/app/data/forecast.csv:ro
     restart: unless-stopped
 
   fog-c:
@@ -43,6 +47,24 @@ services:
       FOG_A_URL: http://fog-a:8000
       FOG_B_URL: http://fog-b:8000
       FOG_C_URL: http://fog-c:8000
+      CHRONOS_URL: http://chronos-ml:8000
     volumes:
       - ./docker-data/fog-c:/app/data
+      - ./ml-service/data/fog-c.csv:/app/data/forecast.csv:ro
     restart: unless-stopped
+  chronos-ml:
+    build:
+      context: ./ml-service
+      dockerfile: Dockerfile
+    container_name: chronos-ml
+    ports:
+      - "8000:8000"
+    environment:
+      CHRONOS_DEVICE: cpu
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - chronos-model-cache:/root/.cache/huggingface
+    restart: unless-stopped
+
+volumes:
+  chronos-model-cache:

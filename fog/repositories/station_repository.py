@@ -80,72 +80,97 @@ def update_station_status(station_id: str, new_status: str):
 
 
 def get_station_capacity():
-    """
-    Calculate the real local station capacity.
-
-    A station is available only if:
-    - Its physical status is AVAILABLE.
-    - It has no active HOLD or CONFIRMED reservation.
-    """
     with sqlite3.connect(DB_PATH) as connection:
         connection.row_factory = sqlite3.Row
 
         row = connection.execute("""
+            WITH pile_stats AS (
+                SELECT
+                    p.station_id,
+
+                    COUNT(*) AS total_piles,
+
+                    SUM(
+                        CASE
+                            WHEN p.status = 'AVAILABLE'
+                            AND p.is_reservable = 1
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM reservations r
+                                WHERE r.pile_id = p.pile_id
+                                AND (
+                                    r.status = 'CONFIRMED'
+                                    OR (
+                                        r.status = 'HOLD'
+                                        AND julianday(r.expires_at) > julianday('now')
+                                    )
+                                )
+                            )
+                            THEN 1 ELSE 0
+                        END
+                    ) AS available_piles,
+
+                    SUM(
+                        CASE WHEN p.status = 'OCCUPIED'
+                        THEN 1 ELSE 0 END
+                    ) AS occupied_piles,
+
+                    SUM(
+                        CASE WHEN p.status = 'OUT_OF_SERVICE'
+                        THEN 1 ELSE 0 END
+                    ) AS out_of_service_piles,
+
+                    SUM(
+                        CASE
+                            WHEN p.status = 'AVAILABLE'
+                            AND p.is_reservable = 1
+                            AND NOT EXISTS (
+                                SELECT 1
+                                FROM reservations r
+                                WHERE r.pile_id = p.pile_id
+                                AND (
+                                    r.status = 'CONFIRMED'
+                                    OR (
+                                        r.status = 'HOLD'
+                                        AND julianday(r.expires_at) > julianday('now')
+                                    )
+                                )
+                            )
+                            THEN p.power_kw ELSE 0
+                        END
+                    ) AS available_power_kw
+
+                FROM piles p
+                GROUP BY p.station_id
+            )
+
             SELECT
                 COUNT(*) AS total_stations,
 
                 SUM(
-                    CASE
-                        WHEN s.status = 'AVAILABLE'
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM reservations r
-                            WHERE r.station_id = s.station_id
-                              AND (
-                                  r.status = 'CONFIRMED'
-                                  OR (
-                                      r.status = 'HOLD'
-                                      AND julianday(r.expires_at) > julianday('now')
-                                  )
-                              )
-                        )
-                        THEN 1 ELSE 0
-                    END
+                    CASE WHEN ps.available_piles > 0
+                    THEN 1 ELSE 0 END
                 ) AS available_stations,
 
                 SUM(
-                    CASE WHEN s.status = 'OCCUPIED'
+                    CASE WHEN ps.occupied_piles = ps.total_piles
                     THEN 1 ELSE 0 END
                 ) AS occupied_stations,
 
                 SUM(
-                    CASE WHEN s.status = 'OUT_OF_SERVICE'
+                    CASE WHEN ps.out_of_service_piles = ps.total_piles
                     THEN 1 ELSE 0 END
                 ) AS out_of_service_stations,
 
-                COALESCE(
-                    SUM(
-                        CASE
-                            WHEN s.status = 'AVAILABLE'
-                            AND NOT EXISTS (
-                                SELECT 1
-                                FROM reservations r
-                                WHERE r.station_id = s.station_id
-                                  AND (
-                                      r.status = 'CONFIRMED'
-                                      OR (
-                                          r.status = 'HOLD'
-                                          AND julianday(r.expires_at) > julianday('now')
-                                      )
-                                  )
-                            )
-                            THEN s.power_kw ELSE 0
-                        END
-                    ),
-                    0
-                ) AS available_power_kw
+                COALESCE(SUM(ps.total_piles), 0) AS total_piles,
+                COALESCE(SUM(ps.available_piles), 0) AS available_piles,
+                COALESCE(SUM(ps.occupied_piles), 0) AS occupied_piles,
+                COALESCE(SUM(ps.out_of_service_piles), 0) AS out_of_service_piles,
+                COALESCE(SUM(ps.available_power_kw), 0) AS available_power_kw
 
             FROM stations s
+            LEFT JOIN pile_stats ps
+                ON ps.station_id = s.station_id
         """).fetchone()
 
         return dict(row)

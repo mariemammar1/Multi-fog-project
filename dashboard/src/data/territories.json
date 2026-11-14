@@ -1,0 +1,41 @@
+{
+  "fog-a": {
+    "name": "Fog A - Central Territory (Nanshan / Futian)",
+    "color": "#0284c7",
+    "total_stations": 524,
+    "total_piles": 6727,
+    "total_power_kw": 127743.5,
+    "mae_chronos": 32.36,
+    "mae_baseline": 34.54,
+    "center": [
+      22.5822,
+      114.0469
+    ]
+  },
+  "fog-b": {
+    "name": "Fog B - Eastern Territory (Luohu / Longgang)",
+    "color": "#16a34a",
+    "total_stations": 545,
+    "total_piles": 8386,
+    "total_power_kw": 174458.3,
+    "mae_chronos": 71.92,
+    "mae_baseline": 87.67,
+    "center": [
+      22.6346,
+      114.1904
+    ]
+  },
+  "fog-c": {
+    "name": "Fog C - Western Territory (Bao'an / Qianhai)",
+    "color": "#d97706",
+    "total_stations": 566,
+    "total_piles": 10505,
+    "total_power_kw": 309274.0,
+    "mae_chronos": 68.76,
+    "mae_baseline": 68.67,
+    "center": [
+      22.6052,
+      113.9028
+    ]
+  }
+}

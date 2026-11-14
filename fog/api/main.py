@@ -1,7 +1,7 @@
 ﻿from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-
+from fog.api.forecast import router as forecast_router
 from fog.database import init_db
 from fog.settings import FOG_ID, FOG_ZONE
 from fog.api.stations import router as stations_router
@@ -26,7 +26,7 @@ app.include_router(stations_router)
 app.include_router(cooperation_router)
 app.include_router(reservations_router)
 app.include_router(piles_router)
-
+app.include_router(forecast_router)
 
 @app.get("/health")
 def health_check():
