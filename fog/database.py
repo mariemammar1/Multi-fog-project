@@ -75,6 +75,7 @@ def init_db():
         """)
 
         # Reservations target individual piles, not whole stations.
+        # Lifecycle V7: HOLD -> CONFIRMED -> ACTIVE -> COMPLETED (or CANCELLED / EXPIRED).
         connection.execute("""
             CREATE TABLE IF NOT EXISTS reservations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +87,8 @@ def init_db():
                     status IN (
                         'HOLD',
                         'CONFIRMED',
+                        'ACTIVE',
+                        'COMPLETED',
                         'CANCELLED',
                         'EXPIRED'
                     )
@@ -97,12 +100,50 @@ def init_db():
             )
         """)
 
-        # One pile cannot have two active reservations.
+        # Migration helper: ensure existing reservations table supports ACTIVE and COMPLETED
+        res_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name='reservations'"
+        ).fetchone()
+        if res_sql and "ACTIVE" not in res_sql[0]:
+            connection.execute("PRAGMA foreign_keys = OFF")
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS reservations_v7 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    hold_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    origin_fog TEXT NOT NULL,
+                    pile_id TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (
+                        status IN (
+                            'HOLD',
+                            'CONFIRMED',
+                            'ACTIVE',
+                            'COMPLETED',
+                            'CANCELLED',
+                            'EXPIRED'
+                        )
+                    ),
+                    expires_at TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (pile_id)
+                        REFERENCES piles(pile_id)
+                )
+            """)
+            connection.execute("""
+                INSERT INTO reservations_v7 (id, hold_id, request_id, origin_fog, pile_id, status, expires_at, created_at)
+                SELECT id, hold_id, request_id, origin_fog, pile_id, status, expires_at, created_at FROM reservations
+            """)
+            connection.execute("DROP TABLE reservations")
+            connection.execute("ALTER TABLE reservations_v7 RENAME TO reservations")
+            connection.execute("PRAGMA foreign_keys = ON")
+
+        # One pile cannot have two active reservations or concurrent charges.
+        connection.execute("DROP INDEX IF EXISTS unique_active_pile_reservation")
         connection.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS
             unique_active_pile_reservation
             ON reservations(pile_id)
-            WHERE status IN ('HOLD', 'CONFIRMED')
+            WHERE status IN ('HOLD', 'CONFIRMED', 'ACTIVE')
         """)
 
         # Useful indexes for station and pile queries.

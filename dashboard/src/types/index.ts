@@ -132,9 +132,41 @@ export interface Recommendation {
   cons: string[];
 }
 
+export interface MultiFogRecommendations {
+  'fog-a': Recommendation[];
+  'fog-b': Recommendation[];
+  'fog-c': Recommendation[];
+}
+
 export interface ToastMessage {
   id: string;
   title: string;
   message?: string;
   type: 'success' | 'info' | 'warning';
+}
+
+export type SimulatorScenario = 'S1_NORMAL' | 'S2_COOPERATION' | 'S6_SATURATION' | 'S7_ML_REACTIVE';
+
+export interface SimulatorEvent {
+  id: string;
+  time: string;
+  tick: number;
+  category: string;
+  title: string;
+  message: string;
+  level: 'info' | 'success' | 'warning' | 'error';
+}
+
+export interface SimulatorStatus {
+  is_running: boolean;
+  interval_sec: number;
+  tick: number;
+  scenario: SimulatorScenario;
+  total_arrivals: number;
+  active_sessions_count: number;
+  total_completed: number;
+  total_cooperations: number;
+  total_unserved: number;
+  capacities: Record<FogId, FogCapacity>;
+  recent_events: SimulatorEvent[];
 }

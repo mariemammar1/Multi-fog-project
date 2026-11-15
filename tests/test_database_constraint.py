@@ -1,67 +1,50 @@
-
 import sqlite3
-from datetime import datetime, timezone
+import pytest
+from pathlib import Path
 
-DB_PATH = "data/fog_a.db"
+DB_PATH = Path("data/fog_a.db")
 
-with sqlite3.connect(DB_PATH) as connection:
-    connection.execute("BEGIN IMMEDIATE")
 
-    try:
-        now = datetime.now(timezone.utc)
+def test_unique_active_pile_constraint():
+    """
+    Verifies that the unique index prevents duplicate active reservations
+    (HOLD, CONFIRMED, ACTIVE) on the same pile.
+    """
+    if not DB_PATH.exists():
+        pytest.skip("data/fog_a.db does not exist")
 
-        # Temporarily clean expired HOLD reservations
-        rows = connection.execute("""
-            SELECT hold_id, expires_at
-            FROM reservations
-            WHERE station_id = 'A-01'
-              AND status = 'HOLD'
-        """).fetchall()
-
-        for hold_id, expires_at in rows:
-            expiration = datetime.fromisoformat(expires_at)
-
-            if expiration <= now:
-                connection.execute("""
-                    UPDATE reservations
-                    SET status = 'EXPIRED'
-                    WHERE hold_id = ?
-                      AND station_id = 'A-01'
-                """, (hold_id,))
-
-        # First active reservation: should succeed
-        connection.execute("""
-            INSERT INTO reservations (
-                hold_id, request_id, origin_fog,
-                station_id, status, expires_at
-            )
-            VALUES (
-                'TEST-HOLD-1', 'TEST-REQ-1', 'fog-b',
-                'A-01', 'HOLD', '2099-01-01T00:00:00'
-            )
-        """)
-
-        print("SUCCESS: First HOLD inserted.")
-
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.execute("BEGIN IMMEDIATE")
         try:
-            # Second active reservation: must be rejected
+            pile = connection.execute("SELECT pile_id FROM piles LIMIT 1").fetchone()
+            if not pile:
+                pytest.skip("No piles in database")
+            pile_id = pile[0]
+
+            # First active reservation: should succeed
             connection.execute("""
                 INSERT INTO reservations (
                     hold_id, request_id, origin_fog,
-                    station_id, status, expires_at
+                    pile_id, status, expires_at
                 )
                 VALUES (
-                    'TEST-HOLD-2', 'TEST-REQ-2', 'fog-c',
-                    'A-01', 'CONFIRMED', '2099-01-01T00:00:00'
+                    'TEST-HOLD-1', 'TEST-REQ-1', 'fog-b',
+                    ?, 'HOLD', '2099-01-01T00:00:00'
                 )
-            """)
+            """, (pile_id,))
 
-            print("ERROR: Duplicate reservation was accepted!")
+            # Second active reservation on the same pile: must fail
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute("""
+                    INSERT INTO reservations (
+                        hold_id, request_id, origin_fog,
+                        pile_id, status, expires_at
+                    )
+                    VALUES (
+                        'TEST-HOLD-2', 'TEST-REQ-2', 'fog-c',
+                        ?, 'CONFIRMED', '2099-01-01T00:00:00'
+                    )
+                """, (pile_id,))
 
-        except sqlite3.IntegrityError as error:
-            print("SUCCESS: Duplicate reservation rejected.")
-            print("Reason:", error)
-
-    finally:
-        connection.rollback()
-        print("Test transaction rolled back.")
+        finally:
+            connection.rollback()

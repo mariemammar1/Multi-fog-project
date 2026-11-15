@@ -1,4 +1,4 @@
-import {
+import type {
   Station,
   Recommendation,
   ScoringWeights,
@@ -6,11 +6,14 @@ import {
   DriverLocation,
   TerritoryForecast,
   OccupancyLevel,
-  FogId
-} from '../types';
+  FogId,
+  MultiFogRecommendations
+} from '../types/index.ts';
 
 /**
  * Calculate Great-Circle distance using Haversine formula (km)
+ * Note: Haversine distance is a simulated spatial estimation (straight-line),
+ * not an actual road-network routing service distance.
  */
 export function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const R = 6371; // Earth's radius in km
@@ -28,6 +31,7 @@ export function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lo
 
 /**
  * Estimate travel time in minutes based on average urban speed (35 km/h) and traffic overhead
+ * Note: Simulated estimate based on urban speed model, clearly identified as non-GPS navigation.
  */
 export function estimateTravelTimeMin(distanceKm: number): number {
   const averageUrbanSpeedKmH = 35;
@@ -48,7 +52,7 @@ export function estimateWaitingTimeMin(
     return {
       waitingTimeMin: 0,
       isEstimate: false,
-      rationale: `${availablePiles} piles immediately available. No queue expected.`,
+      rationale: `${availablePiles} bornes immédiatement disponibles. Aucune attente prévue.`,
     };
   }
 
@@ -56,7 +60,7 @@ export function estimateWaitingTimeMin(
     return {
       waitingTimeMin: 2,
       isEstimate: true,
-      rationale: `Limited capacity (${availablePiles} left). Short access delay expected.`,
+      rationale: `Capacité résiduelle limitée (${availablePiles} restante(s)). Court délai d'accès possible (~2 min).`,
     };
   }
 
@@ -66,12 +70,13 @@ export function estimateWaitingTimeMin(
   return {
     waitingTimeMin: estimatedQueue,
     isEstimate: true,
-    rationale: `All local piles in use. Estimated turnover wait based on territory load (~${estimatedQueue} min).`,
+    rationale: `Toutes les bornes locales sont occupées. Attente estimée par rotation selon la charge territoriale (~${estimatedQueue} min).`,
   };
 }
 
 /**
- * Generate human-readable explanation for a recommended station
+ * Generate human-readable explanation for a recommended station.
+ * Clearly mentions the local Fog decision (Scenario S1) and simulated transit estimation.
  */
 function generateExplanation(
   station: Station,
@@ -85,68 +90,76 @@ function generateExplanation(
   const cons: string[] = [];
 
   const isDc = station.fastCount > 0;
-  const powerDesc = isDc ? `${station.maxPowerKw} kW DC Fast` : `${station.maxPowerKw} kW Standard AC`;
+  const powerDesc = isDc ? `${station.maxPowerKw} kW DC Rapide` : `${station.maxPowerKw} kW AC Standard`;
 
   // Pros
   if (station.availablePiles >= 4) {
-    pros.push(`High availability: ${station.availablePiles} open piles ready right now`);
+    pros.push(`Excellente disponibilité locale : ${station.availablePiles} bornes libres immédiatement`);
   } else if (station.availablePiles > 0) {
-    pros.push(`${station.availablePiles} pile(s) currently open`);
+    pros.push(`${station.availablePiles} borne(s) libre(s) actuellement`);
   }
 
   if (station.maxPowerKw >= 120) {
-    pros.push(`Ultra-fast charging capability (${station.maxPowerKw} kW DC)`);
+    pros.push(`Recharge ultra-rapide (${station.maxPowerKw} kW DC)`);
   } else if (station.maxPowerKw >= 50) {
-    pros.push(`Rapid charging available (${station.maxPowerKw} kW DC)`);
+    pros.push(`Recharge rapide disponible (${station.maxPowerKw} kW DC)`);
   }
 
-  if (distanceKm < 3.5) {
-    pros.push(`Close proximity (${distanceKm} km, ~${travelTimeMin} min drive)`);
+  if (distanceKm < 4.0) {
+    pros.push(`Proximité géographique (${distanceKm} km, ~${travelTimeMin} min de route estimée)`);
   }
 
   if (occupancyLevel === 'low') {
-    pros.push(`Favorable low territory congestion (${occupancyPercent}% forecast)`);
+    pros.push(`Faible affluence territoriale prévue par Chronos-2 (${occupancyPercent}%)`);
   }
 
   if (waitingTimeMin === 0) {
-    pros.push(`Zero estimated wait time upon arrival`);
+    pros.push(`Aucune attente estimée à l'arrivée`);
   }
 
   // Cons
   if (station.availablePiles <= 1 && station.totalPiles > 2) {
-    cons.push(`High local demand (${station.availablePiles} pile left)`);
+    cons.push(`Forte sollicitation locale (${station.availablePiles} borne restante)`);
   }
 
   if (occupancyLevel === 'high') {
-    cons.push(`Elevated regional demand in ${station.fogName} territory (${occupancyPercent}%)`);
+    cons.push(`Affluence régionale soutenue dans ${station.fogName} (${occupancyPercent}%)`);
   }
 
-  if (distanceKm > 10) {
-    cons.push(`Longer transit distance (${distanceKm} km, ~${travelTimeMin} min)`);
+  if (distanceKm > 12) {
+    cons.push(`Distance de trajet plus longue (${distanceKm} km, ~${travelTimeMin} min estimées)`);
   }
 
   if (!isDc && station.maxPowerKw <= 7) {
-    cons.push(`Standard AC only (up to 7 kW, slower session)`);
+    cons.push(`Recharge AC standard (7 kW max, session de charge plus longue)`);
   }
 
   if (cons.length === 0) {
-    cons.push(`Popular charging location during peak hours`);
+    cons.push(`Station recherchée pendant les heures de forte demande`);
   }
 
-  // Full narrative
-  const explanation = `Recommended because this station has ${station.availablePiles} available charging capacity with ${powerDesc} power, a short travel time of ${travelTimeMin} min (${distanceKm} km), and is located in ${station.fogName} where the Chronos-2 territory forecast indicates a ${occupancyLevel} expected occupancy (${occupancyPercent}%).`;
+  // Narrative explanation adhering to S1: autonomous local decision without Fog-to-Fog cooperation
+  const explanation = `Recommandée localement par ${station.fogName} (Scénario S1 — Décision autonome sans coopération) : ${station.availablePiles} bornes libres sur ${station.totalPiles} (${powerDesc}), temps de route simulé à ~${travelTimeMin} min (${distanceKm} km), et prévision Chronos-2 territoriale favorable avec ${occupancyPercent}% d'occupation attendue (${occupancyLevel} affluence).`;
 
   return { explanation, pros, cons };
 }
 
 /**
- * Filter and Rank Stations according to multi-objective score
+ * Filter and Rank Stations strictly for ONE specific Fog node.
+ *
+ * Architectural Invariants of Scenario S1 (Normal Operation):
+ * 1. Fog node evaluates ONLY its own local stations (fogId matching).
+ * 2. Uses ONLY its own local availability data.
+ * 3. Uses ONLY its own Chronos-2 territory forecast.
+ * 4. Normalization is strictly localized within this Fog's candidate set.
+ * 5. No cross-Fog data access or Fog-to-Fog communication is triggered.
  */
-export function rankStations(
+export function rankFogStations(
+  fogId: FogId,
   stations: Station[],
   driverLoc: DriverLocation,
-  forecasts: Record<FogId, TerritoryForecast>,
-  weights: ScoringWeights = { travelTime: 0.45, predictedOccupancy: 0.35, waitingTime: 0.2 },
+  fogForecast: TerritoryForecast | undefined,
+  weights: ScoringWeights = { travelTime: 0.45, predictedOccupancy: 0.35, waitingTime: 0.20 },
   preferences: UserPreferences = {
     vehicleType: 'ALL',
     minPowerKw: 0,
@@ -155,15 +168,18 @@ export function rankStations(
     onlyAvailable: true,
   }
 ): Recommendation[] {
-  // Step 1: Filter incompatible candidates
-  const eligible = stations.filter((station) => {
+  // Rule 1: Strictly isolate stations belonging to this Fog node
+  const localCandidates = stations.filter((station) => station.fogId === fogId);
+
+  // If preferences explicitly filter out this Fog, return empty list
+  if (preferences.selectedFog !== 'ALL' && preferences.selectedFog !== fogId) {
+    return [];
+  }
+
+  // Step 1: Filter incompatible candidates according to driver preferences
+  const eligible = localCandidates.filter((station) => {
     // Availability constraint
     if (preferences.onlyAvailable && station.availablePiles <= 0) {
-      return false;
-    }
-
-    // Fog territory constraint
-    if (preferences.selectedFog !== 'ALL' && station.fogId !== preferences.selectedFog) {
       return false;
     }
 
@@ -180,7 +196,7 @@ export function rankStations(
       return false;
     }
 
-    // Distance pre-filter
+    // Distance pre-filter (simulated Haversine)
     const dist = calculateDistanceKm(driverLoc.lat, driverLoc.lng, station.lat, station.lng);
     if (dist > preferences.maxDistanceKm) {
       return false;
@@ -193,14 +209,13 @@ export function rankStations(
     return [];
   }
 
-  // Step 2: Compute raw features for all eligible stations
+  // Step 2: Compute raw features using strictly this Fog's Chronos-2 forecast
+  const occupancyPercent = fogForecast ? fogForecast.expectedOccupancyPercent : 30.0;
+  const occupancyLevel = fogForecast ? fogForecast.occupancyLevel : 'low';
+
   const featureList = eligible.map((station) => {
     const dist = calculateDistanceKm(driverLoc.lat, driverLoc.lng, station.lat, station.lng);
     const travelTime = estimateTravelTimeMin(dist);
-
-    const territoryFc = forecasts[station.fogId];
-    const occupancyPercent = territoryFc ? territoryFc.expectedOccupancyPercent : 30.0;
-    const occupancyLevel = territoryFc ? territoryFc.occupancyLevel : 'low';
 
     const { waitingTimeMin } = estimateWaitingTimeMin(
       station.availablePiles,
@@ -218,7 +233,7 @@ export function rankStations(
     };
   });
 
-  // Step 3: Find min and max for normalization
+  // Step 3: Find min and max for normalization strictly within this Fog's candidate set
   const maxTravelTime = Math.max(...featureList.map((f) => f.travelTimeMin), 30);
   const minTravelTime = Math.min(...featureList.map((f) => f.travelTimeMin), 2);
 
@@ -228,7 +243,7 @@ export function rankStations(
   const maxWait = Math.max(...featureList.map((f) => f.waitingTimeMin), 15);
   const minWait = 0;
 
-  // Step 4: Compute normalized score (Lower is better)
+  // Step 4: Compute normalized multi-criteria score
   // formula: score = W_travel * norm_travel + W_occupancy * norm_occupancy + W_wait * norm_wait
   const totalWeight = weights.travelTime + weights.predictedOccupancy + weights.waitingTime || 1;
   const wTravel = weights.travelTime / totalWeight;
@@ -285,12 +300,75 @@ export function rankStations(
   // Step 5: Sort ascending by rawScore (lowest penalty first)
   scored.sort((a, b) => a.rawScore - b.rawScore);
 
-  // Assign ranks
+  // Assign local ranks 1..N
   scored.forEach((rec, idx) => {
     rec.rank = idx + 1;
   });
 
   return scored;
+}
+
+/**
+ * Compute Scenario S1 (Normal Operation) recommendations for all 3 Fog nodes.
+ *
+ * Calculates three separate and independent rankings:
+ * - recommendationsA: stations where fogId === 'fog-a'
+ * - recommendationsB: stations where fogId === 'fog-b'
+ * - recommendationsC: stations where fogId === 'fog-c'
+ *
+ * Each Fog computes its ranking locally and independently without cross-Fog comparison.
+ */
+export function computeScenario1Recommendations(
+  allStations: Station[],
+  driverLoc: DriverLocation,
+  forecasts: Record<FogId, TerritoryForecast>,
+  weights: ScoringWeights = { travelTime: 0.45, predictedOccupancy: 0.35, waitingTime: 0.20 },
+  preferences: UserPreferences = {
+    vehicleType: 'ALL',
+    minPowerKw: 0,
+    maxDistanceKm: 25,
+    selectedFog: 'ALL',
+    onlyAvailable: true,
+  }
+): MultiFogRecommendations {
+  // Data partition: each Fog accesses strictly its own local database records
+  const stationsA = allStations.filter((s) => s.fogId === 'fog-a');
+  const stationsB = allStations.filter((s) => s.fogId === 'fog-b');
+  const stationsC = allStations.filter((s) => s.fogId === 'fog-c');
+
+  return {
+    'fog-a': rankFogStations('fog-a', stationsA, driverLoc, forecasts['fog-a'], weights, preferences),
+    'fog-b': rankFogStations('fog-b', stationsB, driverLoc, forecasts['fog-b'], weights, preferences),
+    'fog-c': rankFogStations('fog-c', stationsC, driverLoc, forecasts['fog-c'], weights, preferences),
+  };
+}
+
+/**
+ * Filter and Rank Stations according to multi-objective score.
+ * Maintained for backward compatibility.
+ */
+export function rankStations(
+  stations: Station[],
+  driverLoc: DriverLocation,
+  forecasts: Record<FogId, TerritoryForecast>,
+  weights: ScoringWeights = { travelTime: 0.45, predictedOccupancy: 0.35, waitingTime: 0.20 },
+  preferences: UserPreferences = {
+    vehicleType: 'ALL',
+    minPowerKw: 0,
+    maxDistanceKm: 25,
+    selectedFog: 'ALL',
+    onlyAvailable: true,
+  }
+): Recommendation[] {
+  const targetFog: FogId = preferences.selectedFog === 'ALL' ? 'fog-a' : preferences.selectedFog;
+  return rankFogStations(
+    targetFog,
+    stations.filter((s) => s.fogId === targetFog),
+    driverLoc,
+    forecasts[targetFog],
+    weights,
+    preferences
+  );
 }
 
 /**
@@ -304,4 +382,3 @@ export const PRESET_LOCATIONS: DriverLocation[] = [
   { label: 'Luohu Railway Station (Fog B)', lat: 22.5323, lng: 114.1189, district: 'Luohu' },
   { label: 'Longgang Center (Fog B)', lat: 22.7214, lng: 114.2483, district: 'Longgang' },
 ];
-

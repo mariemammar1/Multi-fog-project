@@ -1,5 +1,5 @@
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
@@ -7,27 +7,26 @@ export default defineConfig({
     port: 5173,
     host: true,
     proxy: {
-      '/fog-a': {
-        target: 'http://127.0.0.1:8001',
+      "/fog-a": {
+        target: "http://127.0.0.1:18001",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/fog-a/, ''),
+        rewrite: (path) => path.replace(/^\/fog-a/, ""),
       },
-      '/fog-b': {
-        target: 'http://127.0.0.1:8002',
+      "/fog-b": {
+        target: "http://127.0.0.1:18002",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/fog-b/, ''),
+        rewrite: (path) => path.replace(/^\/fog-b/, ""),
       },
-      '/fog-c': {
-        target: 'http://127.0.0.1:8003',
+      "/fog-c": {
+        target: "http://127.0.0.1:18003",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/fog-c/, ''),
+        rewrite: (path) => path.replace(/^\/fog-c/, ""),
       },
-      '/chronos': {
-        target: 'http://127.0.0.1:8000',
+      "/chronos": {
+        target: "http://127.0.0.1:8000",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/chronos/, ''),
+        rewrite: (path) => path.replace(/^\/chronos/, ""),
       },
     },
   },
 });
-

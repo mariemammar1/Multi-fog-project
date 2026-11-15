@@ -28,7 +28,7 @@ def get_all_piles():
                     FROM reservations r
                     WHERE r.pile_id = p.pile_id
                       AND (
-                          r.status = 'CONFIRMED'
+                          r.status IN ('CONFIRMED', 'ACTIVE')
                           OR (
                               r.status = 'HOLD'
                               AND julianday(r.expires_at) > julianday('now')
@@ -47,7 +47,7 @@ def get_all_piles():
                         FROM reservations r
                         WHERE r.pile_id = p.pile_id
                           AND (
-                              r.status = 'CONFIRMED'
+                              r.status IN ('CONFIRMED', 'ACTIVE')
                               OR (
                                   r.status = 'HOLD'
                                   AND julianday(r.expires_at) > julianday('now')
@@ -83,6 +83,83 @@ def update_pile_status(pile_id: str, new_status: str):
         return cursor.rowcount > 0
 
 
+def get_station_capacities():
+    """
+    Calculate real-time charging capacity for each station
+    managed by this Fog.
+    """
+    with sqlite3.connect(DB_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+
+        rows = connection.execute("""
+            SELECT
+                p.station_id,
+
+                COUNT(*) AS total_piles,
+
+                COALESCE(SUM(
+                    CASE
+                        WHEN p.status = 'AVAILABLE'
+                         AND p.is_reservable = 1
+                         AND NOT EXISTS (
+                            SELECT 1
+                            FROM reservations r
+                            WHERE r.pile_id = p.pile_id
+                              AND (
+                                  r.status IN ('CONFIRMED', 'ACTIVE')
+                                  OR (
+                                      r.status = 'HOLD'
+                                      AND julianday(r.expires_at) > julianday('now')
+                                  )
+                              )
+                         )
+                        THEN 1
+                        ELSE 0
+                    END
+                ), 0) AS available_piles,
+
+                COALESCE(SUM(
+                    CASE
+                        WHEN p.status = 'OCCUPIED'
+                        THEN 1 ELSE 0
+                    END
+                ), 0) AS occupied_piles,
+
+                COALESCE(SUM(
+                    CASE
+                        WHEN p.status = 'OUT_OF_SERVICE'
+                        THEN 1 ELSE 0
+                    END
+                ), 0) AS out_of_service_piles,
+
+                COALESCE(SUM(
+                    CASE
+                        WHEN p.status = 'AVAILABLE'
+                         AND p.is_reservable = 1
+                         AND NOT EXISTS (
+                            SELECT 1
+                            FROM reservations r
+                            WHERE r.pile_id = p.pile_id
+                              AND (
+                                  r.status IN ('CONFIRMED', 'ACTIVE')
+                                  OR (
+                                      r.status = 'HOLD'
+                                      AND julianday(r.expires_at) > julianday('now')
+                                  )
+                              )
+                         )
+                        THEN p.power_kw
+                        ELSE 0
+                    END
+                ), 0) AS available_power_kw
+
+            FROM piles p
+            GROUP BY p.station_id
+            ORDER BY p.station_id
+        """).fetchall()
+
+        return [dict(row) for row in rows]
+
 def get_pile_capacity():
     """
     Calculate the current capacity of this Fog.
@@ -108,7 +185,7 @@ def get_pile_capacity():
                             FROM reservations r
                             WHERE r.pile_id = p.pile_id
                               AND (
-                                  r.status = 'CONFIRMED'
+                                  r.status IN ('CONFIRMED', 'ACTIVE')
                                   OR (
                                       r.status = 'HOLD'
                                       AND julianday(r.expires_at) > julianday('now')
@@ -144,7 +221,7 @@ def get_pile_capacity():
                             FROM reservations r
                             WHERE r.pile_id = p.pile_id
                               AND (
-                                  r.status = 'CONFIRMED'
+                                  r.status IN ('CONFIRMED', 'ACTIVE')
                                   OR (
                                       r.status = 'HOLD'
                                       AND julianday(r.expires_at) > julianday('now')

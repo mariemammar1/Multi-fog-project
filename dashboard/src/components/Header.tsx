@@ -85,16 +85,16 @@ export const Header: React.FC<HeaderProps> = ({
               <Zap className="w-5 h-5 text-white" strokeWidth={2.5} />
             </div>
             <div className="hidden sm:block">
-              <div className="flex items-baseline gap-2">
+              <div className="flex items-center gap-2">
                 <span className="text-[17px] font-black tracking-tight text-slate-900 leading-none">
                   EV&nbsp;<span className="gradient-text">Guide</span>
                 </span>
-                <span className="text-[9px] font-extrabold tracking-widest uppercase text-slate-400 leading-none pb-0.5">
-                  Multi-Fog
+                <span className="px-2 py-0.5 text-[9px] font-extrabold tracking-wide rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  RÉSEAU MULTI-FOG
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
-                Assistant de recharge intelligent
+                Recherche Intelligente de Bornes de Recharge
               </p>
             </div>
           </div>

@@ -7,6 +7,7 @@ import {
   AlertCircle,
   Info,
   X,
+  Activity,
 } from 'lucide-react';
 
 import {
@@ -18,12 +19,13 @@ import {
   ScoringWeights,
   UserPreferences,
   Recommendation,
+  MultiFogRecommendations,
   ToastMessage
 } from './types';
 
 import { FogDataService, MultiFogStatus } from './services/api';
 import {
-  rankStations,
+  computeScenario1Recommendations,
   PRESET_LOCATIONS
 } from './services/recommendationEngine';
 
@@ -32,6 +34,7 @@ import { OverviewSection } from './components/OverviewSection';
 import { RecommendationSection } from './components/RecommendationSection';
 import { StationMap } from './components/StationMap';
 import { ForecastSection } from './components/ForecastSection';
+import { RealTimeSimulator } from './components/RealTimeSimulator';
 import { StationDetailModal } from './components/StationDetailModal';
 import { DataProvenanceModal } from './components/DataProvenanceModal';
 import { Footer } from './components/Footer';
@@ -71,7 +74,8 @@ export const App: React.FC = () => {
   });
 
   // Navigation, Selection & Modals
-  const [activeTab, setActiveTab] = useState<'recommendations' | 'map' | 'forecasts'>('recommendations');
+  const [activeTab, setActiveTab] = useState<'recommendations' | 'map' | 'forecasts' | 'simulator'>('recommendations');
+  const [selectedFog, setSelectedFog] = useState<FogId>('fog-a');
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const [isDetailModalOpen, setIsDetailModalOpen] = useState<boolean>(false);
   const [isDataProvenanceOpen, setIsDataProvenanceOpen] = useState<boolean>(false);
@@ -112,11 +116,24 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [loadFogData]);
 
-  // Compute Live Recommendations
-  const recommendations: Recommendation[] = useMemo(() => {
-    if (allStations.length === 0) return [];
-    return rankStations(allStations, driverLocation, forecasts, weights, preferences);
+  // Compute Scenario 1 Independent Rankings (Fog A, Fog B, Fog C)
+  const allFogRecommendations: MultiFogRecommendations = useMemo(() => {
+    if (allStations.length === 0) {
+      return { 'fog-a': [], 'fog-b': [], 'fog-c': [] };
+    }
+    return computeScenario1Recommendations(
+      allStations,
+      driverLocation,
+      forecasts,
+      weights,
+      preferences
+    );
   }, [allStations, driverLocation, forecasts, weights, preferences]);
+
+  // Active ranking for the selected Fog (strictly isolated)
+  const recommendations: Recommendation[] = useMemo(() => {
+    return allFogRecommendations[selectedFog] || [];
+  }, [allFogRecommendations, selectedFog]);
 
   const topPick = recommendations[0];
 
@@ -216,23 +233,24 @@ export const App: React.FC = () => {
       {/* ── Tab Bar ── */}
       <div className="bg-white/90 border-b border-slate-200/80 sticky top-[68px] z-30 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <nav className="flex gap-1 py-2" aria-label="Navigation principale">
+          <nav className="flex gap-1 py-2 overflow-x-auto" aria-label="Navigation principale">
             {([
               { id: 'recommendations', icon: Sparkles, label: 'Trouver une Borne',   badge: topPick ? 'Top 1' : undefined, activeClass: 'bg-cyan-50 text-cyan-800 border-cyan-300' },
               { id: 'map',             icon: Compass,  label: 'Carte des Bornes',     badge: undefined,                      activeClass: 'bg-emerald-50 text-emerald-800 border-emerald-300' },
               { id: 'forecasts',       icon: Cpu,      label: 'Prévisions IA',        badge: undefined,                      activeClass: 'bg-sky-50 text-sky-800 border-sky-300' },
+              { id: 'simulator',       icon: Activity, label: 'Simulateur Temps Réel',badge: 'Live',                         activeClass: 'bg-indigo-50 text-indigo-900 border-indigo-300' },
             ] as const).map(({ id, icon: Icon, label, badge, activeClass }) => {
               const active = activeTab === id;
               return (
                 <button
                   key={id}
                   onClick={() => setActiveTab(id as typeof activeTab)}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer border ${
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer border whitespace-nowrap ${
                     active ? activeClass : 'border-transparent text-slate-500 hover:text-slate-800 hover:bg-slate-50'
                   }`}
                 >
                   <Icon className="w-4 h-4 flex-shrink-0" />
-                  <span className="hidden sm:inline">{label}</span>
+                  <span>{label}</span>
                   {badge && (
                     <span className="ml-0.5 px-2 py-0.5 rounded-full text-[10px] font-black bg-cyan-600 text-white leading-none">
                       {badge}
@@ -251,7 +269,13 @@ export const App: React.FC = () => {
         {activeTab === 'recommendations' && (
           <div className="space-y-8 animate-fadeIn">
             <RecommendationSection
+              selectedFog={selectedFog}
+              onSelectFog={setSelectedFog}
               recommendations={recommendations}
+              allFogRecommendations={allFogRecommendations}
+              capacities={capacities}
+              forecasts={forecasts}
+              territoriesMeta={territoriesMeta}
               weights={weights}
               onWeightsChange={setWeights}
               preferences={preferences}
@@ -311,6 +335,15 @@ export const App: React.FC = () => {
               territoriesMeta={territoriesMeta}
             />
           </div>
+        )}
+
+        {activeTab === 'simulator' && (
+          <RealTimeSimulator
+            capacities={capacities}
+            territoriesMeta={territoriesMeta}
+            onRefreshData={loadFogData}
+            onShowToast={showToast}
+          />
         )}
       </main>
 

@@ -63,3 +63,46 @@ class CancelResponse(BaseModel):
     proposer_fog: str
     pile_ids: list[str]
     status: Literal["CANCELLED"]
+
+
+class ActivateRequest(BaseModel):
+    hold_id: str = Field(min_length=1)
+
+
+class ActivateResponse(BaseModel):
+    hold_id: str
+    request_id: str
+    origin_fog: str
+    proposer_fog: str
+    pile_ids: list[str]
+    status: Literal["ACTIVE"]
+
+
+class CompleteRequest(BaseModel):
+    hold_id: str = Field(min_length=1)
+
+
+class CompleteResponse(BaseModel):
+    hold_id: str
+    request_id: str
+    origin_fog: str
+    proposer_fog: str
+    pile_ids: list[str]
+    status: Literal["COMPLETED"]
+
+
+class LocalSessionRequest(BaseModel):
+    vehicle_id: str = Field(min_length=1)
+    station_id: str | None = None
+    required_power_kw: float = Field(default=22.0, gt=0)
+
+
+class LocalSessionResponse(BaseModel):
+    session_id: str
+    vehicle_id: str
+    fog_id: str
+    station_id: str
+    pile_id: str
+    power_kw: float
+    status: Literal["ACTIVE"]
+    created_at: str

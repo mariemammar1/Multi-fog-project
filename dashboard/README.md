@@ -22,15 +22,27 @@ npm run dev
 ```
 The application will start at `http://localhost:5173/`.
 
-### Production Build
+### Production Build & Test
 ```bash
 npm run build
+npm test       # Exécute la suite de tests automatisée du Scénario S1
 npm run preview
 ```
 
 ---
 
-## 2. Core Driver Experience: "Which charging station should I choose right now?"
+## 2. Scénario S1 — Fonctionnement Normal (Décisions Locales Indépendantes)
+
+Dans le Scénario S1, les trois zones A, B et C disposent d'une disponibilité suffisante :
+- **Autonomie stricte :** Chaque nœud Fog (Fog A, Fog B, Fog C) consulte exclusivement ses propres stations, exploite ses propres données de disponibilité et sa propre prévision Chronos-2.
+- **Aucune coopération inter-Fog :** Aucune communication Fog-to-Fog n'est déclenchée (`HELP_REQUEST`, `PROPOSAL`, `HOLD`, `CONFIRM`).
+- **Isolation des prédictions :** Les inférences Chronos-2 restent associées à leur Fog respectif sans échange croisé.
+- **Visualisation découplée :** Le dashboard fournit une navigation par onglets (Fog A / Fog B / Fog C) permettant au conducteur de consulter les décisions locales et indépendantes de chaque Fog sans comparaison croisée inter-territoires.
+- **Transparence des données :** Les distances (Haversine) et temps de route (~35 km/h) sont identifiés en tant qu'estimations simulées. L'intégration temps réel des flux par borne interviendra lors de la phase finale dédiée.
+
+---
+
+## 3. Core Driver Experience: "Which charging station should I choose right now?"
 
 The dashboard answers the driver's primary question by combining:
 1. **Physical local availability** from Fog SQLite databases (open piles, power ratings, connector types).

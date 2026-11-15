@@ -243,3 +243,211 @@ def cancel_hold(hold_id):
             ],
             "status": "CANCELLED"
         }
+
+
+def activate_hold(hold_id: str):
+    """
+    Step 3 of V7 Protocol: Activate a confirmed reservation.
+    Atomically transitions CONFIRMED reservation into an ACTIVE charging session
+    and sets pile status to OCCUPIED.
+    """
+    with sqlite3.connect(DB_PATH, timeout=10) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+
+        reservations = connection.execute("""
+            SELECT hold_id, request_id, origin_fog,
+                   pile_id, status
+            FROM reservations
+            WHERE hold_id = ?
+            ORDER BY pile_id
+        """, (hold_id,)).fetchall()
+
+        if not reservations:
+            return None
+
+        # Idempotent check
+        if all(row["status"] == "ACTIVE" for row in reservations):
+            return {
+                "hold_id": hold_id,
+                "request_id": reservations[0]["request_id"],
+                "origin_fog": reservations[0]["origin_fog"],
+                "pile_ids": [row["pile_id"] for row in reservations],
+                "status": "ACTIVE"
+            }
+
+        # Must be CONFIRMED to be activated
+        if not all(row["status"] == "CONFIRMED" for row in reservations):
+            return None
+
+        pile_ids = [row["pile_id"] for row in reservations]
+
+        connection.execute("""
+            UPDATE reservations
+            SET status = 'ACTIVE'
+            WHERE hold_id = ? AND status = 'CONFIRMED'
+        """, (hold_id,))
+
+        for pid in pile_ids:
+            connection.execute("""
+                UPDATE piles
+                SET status = 'OCCUPIED'
+                WHERE pile_id = ?
+            """, (pid,))
+
+        return {
+            "hold_id": hold_id,
+            "request_id": reservations[0]["request_id"],
+            "origin_fog": reservations[0]["origin_fog"],
+            "pile_ids": pile_ids,
+            "status": "ACTIVE"
+        }
+
+
+def complete_hold(hold_id: str):
+    """
+    Step 4 of V7 Protocol: Complete a charging session.
+    Frees the pile (restoring AVAILABLE status) and marks reservation COMPLETED.
+    """
+    with sqlite3.connect(DB_PATH, timeout=10) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+
+        reservations = connection.execute("""
+            SELECT hold_id, request_id, origin_fog,
+                   pile_id, status
+            FROM reservations
+            WHERE hold_id = ?
+            ORDER BY pile_id
+        """, (hold_id,)).fetchall()
+
+        if not reservations:
+            return None
+
+        # Idempotent check
+        if all(row["status"] == "COMPLETED" for row in reservations):
+            return {
+                "hold_id": hold_id,
+                "request_id": reservations[0]["request_id"],
+                "origin_fog": reservations[0]["origin_fog"],
+                "pile_ids": [row["pile_id"] for row in reservations],
+                "status": "COMPLETED"
+            }
+
+        # Can complete ACTIVE or CONFIRMED sessions
+        if not all(row["status"] in ("ACTIVE", "CONFIRMED") for row in reservations):
+            return None
+
+        pile_ids = [row["pile_id"] for row in reservations]
+
+        connection.execute("""
+            UPDATE reservations
+            SET status = 'COMPLETED'
+            WHERE hold_id = ? AND status IN ('ACTIVE', 'CONFIRMED')
+        """, (hold_id,))
+
+        for pid in pile_ids:
+            connection.execute("""
+                UPDATE piles
+                SET status = 'AVAILABLE'
+                WHERE pile_id = ?
+            """, (pid,))
+
+        return {
+            "hold_id": hold_id,
+            "request_id": reservations[0]["request_id"],
+            "origin_fog": reservations[0]["origin_fog"],
+            "pile_ids": pile_ids,
+            "status": "COMPLETED"
+        }
+
+
+def create_local_session(vehicle_id: str, required_power_kw: float = 22.0, station_id: str | None = None, fog_id: str = "fog-a"):
+    """
+    Scenario 1: Local communication between vehicle and its connected Fog.
+    Verifies local pile availability directly on this Fog.
+    If available, accepts request and immediately creates an ACTIVE local session.
+    """
+    now = datetime.now(timezone.utc)
+    now_text = now.isoformat(timespec="seconds")
+    session_expiry = (now + timedelta(hours=2)).isoformat(timespec="seconds")
+
+    with sqlite3.connect(DB_PATH, timeout=10) as connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")
+
+        # Expire old temporary holds first
+        connection.execute("""
+            UPDATE reservations
+            SET status = 'EXPIRED'
+            WHERE status = 'HOLD'
+              AND julianday(expires_at) <= julianday(?)
+        """, (now_text,))
+
+        # Query local available pile
+        query = """
+            SELECT p.pile_id, p.station_id, p.power_kw
+            FROM piles p
+            WHERE p.status = 'AVAILABLE'
+              AND p.is_reservable = 1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM reservations r
+                  WHERE r.pile_id = p.pile_id
+                    AND (
+                        r.status IN ('CONFIRMED', 'ACTIVE')
+                        OR (
+                            r.status = 'HOLD'
+                            AND julianday(r.expires_at) > julianday(?)
+                        )
+                    )
+              )
+        """
+        params = [now_text]
+        if station_id:
+            query += " AND p.station_id = ?"
+            params.append(station_id)
+
+        query += " ORDER BY p.power_kw DESC LIMIT 1"
+
+        available_pile = connection.execute(query, params).fetchone()
+
+        if not available_pile:
+            return None
+
+        session_id = f"local-session-{uuid4()}"
+
+        connection.execute("""
+            INSERT INTO reservations (
+                hold_id,
+                request_id,
+                origin_fog,
+                pile_id,
+                status,
+                expires_at
+            )
+            VALUES (?, ?, ?, ?, 'ACTIVE', ?)
+        """, (
+            session_id,
+            f"req-{vehicle_id}",
+            fog_id,
+            available_pile["pile_id"],
+            session_expiry
+        ))
+
+        connection.execute("""
+            UPDATE piles
+            SET status = 'OCCUPIED'
+            WHERE pile_id = ?
+        """, (available_pile["pile_id"],))
+
+        return {
+            "session_id": session_id,
+            "vehicle_id": vehicle_id,
+            "fog_id": fog_id,
+            "station_id": available_pile["station_id"],
+            "pile_id": available_pile["pile_id"],
+            "power_kw": available_pile["power_kw"],
+            "status": "ACTIVE",
+            "created_at": now_text
+        }

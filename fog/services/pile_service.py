@@ -3,6 +3,7 @@ from fog.repositories.pile_repository import (
     get_all_piles,
     update_pile_status,
     get_pile_capacity,
+    get_station_capacities,
 )
 
 
@@ -37,7 +38,11 @@ def change_pile_status(pile_id: str, new_status: str):
         "status": new_status,
         "message": "Pile status updated successfully"
     }
-
+def calculate_station_capacities():
+    """
+    Return the current charging capacity grouped by station.
+    """
+    return get_station_capacities()
 
 def calculate_local_pile_capacity():
     """

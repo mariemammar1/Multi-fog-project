@@ -21,11 +21,23 @@ class StationResponse(BaseModel):
     zone: str
     status: Literal["AVAILABLE", "OCCUPIED", "OUT_OF_SERVICE"]
     power_kw: float
-    created_at: str | None
+    created_at: str | None = None
     reservation_status: Literal[
         "HOLD", "CONFIRMED", "CANCELLED", "EXPIRED"
     ] | None = None
     is_reservable: bool
+    fog_id: str | None = None
+    longitude: float | None = None
+    latitude: float | None = None
+    slow_count: int | None = None
+    fast_count: int | None = None
+    charge_count: int | None = None
+    tazid: str | None = None
+    total_piles: int | None = None
+    available_piles: int | None = None
+    occupied_piles: int | None = None
+    out_of_service_piles: int | None = None
+    total_power_kw: float | None = None
 
 
 class StationStatusUpdate(BaseModel):

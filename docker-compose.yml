@@ -1,9 +1,9 @@
-services:
+﻿services:
   fog-a:
     build: .
     container_name: fog-a
     ports:
-      - "8001:8000"
+      - "18001:8000"
     environment:
       FOG_ID: fog-a
       FOG_ZONE: fog-a
@@ -21,7 +21,7 @@ services:
     build: .
     container_name: fog-b
     ports:
-      - "8002:8000"
+      - "18002:8000"
     environment:
       FOG_ID: fog-b
       FOG_ZONE: fog-b
@@ -39,7 +39,7 @@ services:
     build: .
     container_name: fog-c
     ports:
-      - "8003:8000"
+      - "18003:8000"
     environment:
       FOG_ID: fog-c
       FOG_ZONE: fog-c
@@ -68,3 +68,4 @@ services:
 
 volumes:
   chronos-model-cache:
+

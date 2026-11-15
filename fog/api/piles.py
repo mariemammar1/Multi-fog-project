@@ -9,6 +9,7 @@ from fog.services.pile_service import (
     list_local_piles,
     change_pile_status,
     calculate_local_pile_capacity,
+    calculate_station_capacities,
 )
 
 
@@ -36,7 +37,22 @@ class PileResponse(BaseModel):
 class PileStatusUpdate(BaseModel):
     status: Literal["AVAILABLE", "OCCUPIED", "OUT_OF_SERVICE"]
 
-
+class StationCapacityResponse(BaseModel):
+    station_id: str
+    total_piles: int
+    available_piles: int
+    occupied_piles: int
+    out_of_service_piles: int
+    available_power_kw: float
+@router.get(
+    "/station-capacities",
+    response_model=list[StationCapacityResponse]
+)
+def get_station_capacities():
+    """
+    Return charging capacity grouped by station for this Fog.
+    """
+    return calculate_station_capacities()
 @router.get("", response_model=list[PileResponse])
 def list_piles():
     """

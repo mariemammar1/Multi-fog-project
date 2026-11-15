@@ -99,9 +99,13 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
           {/* Close button — always visible, large tap target */}
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onClose(); }}
-            aria-label="Fermer"
-            className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-900 transition-colors cursor-pointer"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            aria-label="Fermer la fiche technique"
+            className="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-2xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-600 hover:text-slate-900 transition-all cursor-pointer shadow-2xs z-20"
           >
             <X className="w-5 h-5" />
           </button>
@@ -114,10 +118,10 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 text-center">
               <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500 font-bold mb-2">
-                <Clock className="w-4 h-4 text-cyan-500" /> Temps de route
+                <Clock className="w-4 h-4 text-cyan-500" /> Trajet (Simulé)
               </div>
-              <div className="text-3xl font-black text-slate-900 leading-none">~{travelTimeMin}</div>
-              <div className="text-xs text-slate-400 font-medium mt-1">{distanceKm} km depuis vous</div>
+              <div className="text-3xl font-black text-slate-900 leading-none">~{travelTimeMin} min</div>
+              <div className="text-xs text-slate-400 font-medium mt-1">{distanceKm} km (vol d'oiseau)</div>
             </div>
 
             <div className={`rounded-2xl p-4 border text-center ${
@@ -222,8 +226,12 @@ export const StationDetailModal: React.FC<StationDetailModalProps> = ({
 
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onClose(); }}
-            className="sm:w-auto px-5 py-4 rounded-2xl bg-white hover:bg-slate-50 text-slate-400 font-bold text-sm border border-slate-200 transition-colors cursor-pointer"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            className="sm:w-auto px-6 py-4 rounded-2xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-700 font-bold text-sm border border-slate-200 transition-colors cursor-pointer"
           >
             Fermer
           </button>
