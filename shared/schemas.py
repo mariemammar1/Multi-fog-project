@@ -106,3 +106,51 @@ class LocalSessionResponse(BaseModel):
     power_kw: float
     status: Literal["ACTIVE"]
     created_at: str
+
+
+# ===========================================================================
+# Scenario 5 — PREPARE / SETTLE Distributed Protocol Schemas
+# ===========================================================================
+
+class RoundPrepareRequest(BaseModel):
+    tick: int = Field(ge=1, description="Round tick number")
+    arrivals: list[LocalSessionRequest] = Field(default_factory=list)
+    completions: list[str] = Field(default_factory=list, description="Hold IDs to complete")
+
+
+class RoundPrepareResponse(BaseModel):
+    fog_id: str
+    tick: int
+    status: Literal["PREPARED"]
+    served_sessions: list[LocalSessionResponse]
+    unserved_vehicles: list[str]
+    released_piles: list[str]
+    available_piles: int
+    occupied_piles: int
+
+
+class RoundSettleRequest(BaseModel):
+    tick: int = Field(ge=1, description="Round tick number")
+    trigger_cooperation: bool = Field(default=True, description="Whether unserved vehicles initiate peer cooperation")
+    remote_transfers: list[LocalSessionRequest] = Field(default_factory=list)
+
+
+class RoundSettleResponse(BaseModel):
+    fog_id: str
+    tick: int
+    status: Literal["SETTLED"]
+    cooperation_results: list[dict] = Field(default_factory=list)
+    accepted_transfers: list[LocalSessionResponse] = Field(default_factory=list)
+    remaining_unserved: list[str] = Field(default_factory=list)
+    available_piles: int
+    occupied_piles: int
+
+
+class RoundStatusResponse(BaseModel):
+    fog_id: str
+    tick: int
+    phase: Literal["IDLE", "PREPARED", "SETTLED"]
+    available_piles: int
+    occupied_piles: int
+    unserved_vehicles: list[str]
+

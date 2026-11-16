@@ -2,8 +2,10 @@
 Tests for Scenario 5 (Orchestrator PREPARE/SETTLE) and
 Scenario 7 (ML prediction read-only, reactive cooperation).
 """
+import json
+import httpx
 import pytest
-from simulator.orchestrator import FogNodeState, RoundOrchestrator
+from simulator.orchestrator import FogNodeState, RoundOrchestrator, DistributedRoundOrchestrator
 
 # --- Scenario 5 tests ---
 
@@ -178,3 +180,169 @@ def test_s7_no_premature_reservation_before_arrival():
     orch.run_round(arrivals={}, completions={}, ml_predictions={"fog-b": 100, "fog-a": 50})
     after_occupied = {fog_id: f.occupied for fog_id, f in fogs.items()}
     assert before_occupied == after_occupied
+
+
+# ===========================================================================
+# Scenario 5 — Distributed HTTP Orchestrator Tests
+# ===========================================================================
+
+def test_s5_distributed_orchestrator_round_prepare_settle():
+    """
+    Scenario 5: DistributedRoundOrchestrator sends real HTTP requests to /prepare and /settle.
+    Verifies that it respects the global barrier and aggregates round metrics.
+    """
+    fog_urls = {
+        "fog-a": "http://127.0.0.1:8001",
+        "fog-b": "http://127.0.0.1:8002",
+        "fog-c": "http://127.0.0.1:8003",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        body = json.loads(request.content.decode("utf-8")) if request.content else {}
+
+        if "/api/v1/round/prepare" in url_str:
+            fog_id = "fog-a" if "8001" in url_str else ("fog-b" if "8002" in url_str else "fog-c")
+            return httpx.Response(
+                200,
+                json={
+                    "fog_id": fog_id,
+                    "tick": body.get("tick", 1),
+                    "status": "PREPARED",
+                    "served_sessions": [],
+                    "unserved_vehicles": [],
+                    "released_piles": [],
+                    "available_piles": 5,
+                    "occupied_piles": 2,
+                },
+            )
+
+        if "/api/v1/round/settle" in url_str:
+            fog_id = "fog-a" if "8001" in url_str else ("fog-b" if "8002" in url_str else "fog-c")
+            return httpx.Response(
+                200,
+                json={
+                    "fog_id": fog_id,
+                    "tick": body.get("tick", 1),
+                    "status": "SETTLED",
+                    "cooperation_results": [],
+                    "accepted_transfers": [],
+                    "remaining_unserved": [],
+                    "available_piles": 5,
+                    "occupied_piles": 2,
+                },
+            )
+
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    orchestrator = DistributedRoundOrchestrator(fog_urls=fog_urls, client=client)
+
+    result = orchestrator.run_round(
+        arrivals={"fog-a": ["v1", "v2"], "fog-b": ["v3"]},
+        completions={"fog-a": ["old-1"]},
+    )
+
+    assert result["tick"] == 1
+    assert result["total_unserved"] == 0
+    assert result["cooperation_triggered"] is False
+    assert len(orchestrator.history) == 1
+
+
+def test_s5_distributed_orchestrator_barrier_mismatch_raises():
+    """
+    Scenario 5 Guard: If one Fog reports tick=2 while others report tick=1,
+    the global barrier assertion must raise an AssertionError.
+    """
+    fog_urls = {
+        "fog-a": "http://127.0.0.1:8001",
+        "fog-b": "http://127.0.0.1:8002",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        # Desynchronized tick on fog-b
+        tick_resp = 1 if "8001" in url_str else 2
+        return httpx.Response(
+            200,
+            json={
+                "fog_id": "fog-a" if "8001" in url_str else "fog-b",
+                "tick": tick_resp,
+                "status": "PREPARED",
+                "served_sessions": [],
+                "unserved_vehicles": [],
+                "released_piles": [],
+                "available_piles": 5,
+                "occupied_piles": 2,
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    orchestrator = DistributedRoundOrchestrator(fog_urls=fog_urls, client=client)
+
+    with pytest.raises(AssertionError) as exc_info:
+        orchestrator.run_round(arrivals={}, completions={})
+    assert "Barrier tick mismatch" in str(exc_info.value)
+
+
+def test_s5_distributed_orchestrator_transfers_unserved_over_http():
+    """
+    Scenario 5 SETTLE: Fog B has 2 unserved vehicles. Orchestrator transfers them
+    to Fog A over HTTP, which accepts them.
+    """
+    fog_urls = {
+        "fog-a": "http://127.0.0.1:8001",
+        "fog-b": "http://127.0.0.1:8002",
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        body = json.loads(request.content.decode("utf-8")) if request.content else {}
+
+        if "/api/v1/round/prepare" in url_str:
+            if "8002" in url_str:  # Fog B is full, 2 unserved
+                return httpx.Response(200, json={
+                    "fog_id": "fog-b", "tick": 1, "status": "PREPARED",
+                    "served_sessions": [], "unserved_vehicles": ["vb1", "vb2"],
+                    "released_piles": [], "available_piles": 0, "occupied_piles": 5
+                })
+            else:  # Fog A has 4 piles available
+                return httpx.Response(200, json={
+                    "fog_id": "fog-a", "tick": 1, "status": "PREPARED",
+                    "served_sessions": [], "unserved_vehicles": [],
+                    "released_piles": [], "available_piles": 4, "occupied_piles": 1
+                })
+
+        if "/api/v1/round/settle" in url_str:
+            transfers = body.get("remote_transfers", [])
+            accepted = [
+                {"vehicle_id": t["vehicle_id"], "status": "ACTIVE"}
+                for t in transfers
+            ]
+            return httpx.Response(200, json={
+                "fog_id": "fog-a" if "8001" in url_str else "fog-b",
+                "tick": 1, "status": "SETTLED",
+                "cooperation_results": [],
+                "accepted_transfers": accepted,
+                "remaining_unserved": [],
+                "available_piles": 2 if "8001" in url_str else 0,
+                "occupied_piles": 3 if "8001" in url_str else 5
+            })
+
+        return httpx.Response(404)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    orchestrator = DistributedRoundOrchestrator(fog_urls=fog_urls, client=client)
+
+    result = orchestrator.run_round(
+        arrivals={"fog-b": ["vb1", "vb2"]},
+        completions={},
+    )
+
+    assert result["cooperation_triggered"] is True
+    assert len(result["transfers"]) == 1
+    assert result["transfers"][0]["from_fog"] == "fog-b"
+    assert result["transfers"][0]["to_fog"] == "fog-a"
+    assert result["transfers"][0]["vehicles"] == ["vb1", "vb2"]
+    assert result["total_unserved"] == 0
+

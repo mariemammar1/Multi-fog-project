@@ -40,6 +40,8 @@ class RealTimeSimulator:
         self.total_unserved = 0
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        # S7: cache the last ML predictions per fog (for dashboard display)
+        self._last_ml_predictions: Dict[str, float | None] = {}
 
     def get_fog_capacities(self) -> Dict[str, Dict[str, Any]]:
         """Read real-time capacities directly from each Fog's SQLite database."""
@@ -173,18 +175,66 @@ class RealTimeSimulator:
                 self.total_arrivals += count
 
         elif self.scenario == "S7_ML_REACTIVE":
-            # Chronos-2 predicted peak on Fog B; actual arrivals occur
-            predicted = 18
-            arrivals["fog-b"] = [f"EV-ML-{i:03d}" for i in range(predicted)]
-            arrivals["fog-a"] = [f"EV-A{i:03d}" for i in range(3)]
-            arrivals["fog-c"] = [f"EV-C{i:03d}" for i in range(2)]
-            self.total_arrivals += sum(len(v) for v in arrivals.values())
-            self.log_event(
-                "ML_PREDICTION",
-                "Chronos-2 : Prédiction observée",
-                f"Prévision Chronos-2 pour Fog B = {predicted} arrivées. 0 borne réservée à l'avance (mode réactif).",
-                "info"
-            )
+            # S7: Query Chronos-2 for a real prediction per Fog.
+            # Rule: prediction is READ-ONLY — no pile is reserved until real vehicles arrive.
+            # The predicted count is used ONLY to generate a realistic arrival wave
+            # that may (or may not) saturate a Fog, triggering reactive cooperation.
+            try:
+                from fog.services.ml_client import (
+                    get_chronos_prediction,
+                    get_baseline_prediction,
+                    scale_busy_to_arrivals,
+                )
+
+                predictions_log: Dict[str, str] = {}
+
+                for fog_id in arrivals:
+                    busy_pred = get_chronos_prediction(fog_id)
+                    is_chronos = busy_pred is not None
+
+                    if busy_pred is None:
+                        # Chronos unreachable — use last-value baseline
+                        busy_pred = get_baseline_prediction(fog_id) or 0.0
+
+                    predicted_arrivals = scale_busy_to_arrivals(busy_pred, fog_id)
+                    # Store raw prediction for status/dashboard
+                    self._last_ml_predictions[fog_id] = busy_pred
+
+                    # Apply mild jitter ±20% around prediction (real-world variability)
+                    jitter = max(0, int(predicted_arrivals * random.uniform(0.8, 1.2)))
+                    actual_count = jitter
+
+                    for i in range(actual_count):
+                        self.total_arrivals += 1
+                        arrivals[fog_id].append(f"EV-ML-{fog_id}-{self.tick_count}-{i:03d}")
+
+                    source = "Chronos-2" if is_chronos else "baseline"
+                    predictions_log[fog_id] = (
+                        f"{fog_id.upper()}: busy≈{busy_pred:.0f} → {actual_count} arrivées ({source})"
+                    )
+
+                self.log_event(
+                    "ML_PREDICTION",
+                    "Chronos-2 : Prédictions consommées",
+                    " | ".join(predictions_log.values()) +
+                    " | 0 borne réservée à l'avance (mode réactif S7).",
+                    "info",
+                )
+
+            except ImportError as e:
+                # ml_client not importable in test isolation — fall back to static values
+                logger.warning(f"[S7] ml_client import failed ({e}), using static fallback.")
+                for fog_id, count in {"fog-b": 18, "fog-a": 3, "fog-c": 2}.items():
+                    for i in range(count):
+                        self.total_arrivals += 1
+                        arrivals[fog_id].append(f"EV-ML-{i:03d}")
+                self.log_event(
+                    "ML_PREDICTION",
+                    "Chronos-2 : Mode repli statique",
+                    "Service ML non disponible. Prédiction statique utilisée (Fog B = 18).",
+                    "warning",
+                )
+
 
         return arrivals
 
@@ -283,64 +333,95 @@ class RealTimeSimulator:
                 )
                 continue
 
-            chosen_peer, avail = candidates[0]
-            to_transfer = min(needed, avail)
+            # Scenario S3 & S4: Multi-peer candidate failover and reservation
+            transferred_total = 0
+            remaining_vehicles = list(vehicles)
 
-            # Execute V7 Protocol: HOLD -> CONFIRM -> ACTIVATE on chosen peer
-            transferred_vehicles = vehicles[:to_transfer]
-            peer_db = FOG_CONFIGS[chosen_peer]["db"]
+            for candidate_idx, (peer_id, avail) in enumerate(candidates):
+                if not remaining_vehicles:
+                    break
 
-            with sqlite3.connect(peer_db) as conn:
-                conn.row_factory = sqlite3.Row
-                piles = conn.execute("""
-                    SELECT pile_id, power_kw
-                    FROM piles
-                    WHERE status = 'AVAILABLE' AND is_reservable = 1
-                    ORDER BY power_kw DESC
-                    LIMIT ?
-                """, (to_transfer,)).fetchall()
+                to_transfer = min(len(remaining_vehicles), avail)
+                if to_transfer <= 0:
+                    continue
 
-                for i, pile in enumerate(piles):
-                    v_id = transferred_vehicles[i]
-                    hold_id = f"v7-trans-{tick}-{v_id}"
-                    duration = random.randint(4, 9)
+                batch_vehicles = remaining_vehicles[:to_transfer]
+                allocated_count = 0
+                peer_db = FOG_CONFIGS[peer_id]["db"]
 
-                    # Mark pile OCCUPIED and reservation ACTIVE
-                    conn.execute("UPDATE piles SET status = 'OCCUPIED' WHERE pile_id = ?", (pile["pile_id"],))
-                    conn.execute("""
-                        INSERT INTO reservations (hold_id, request_id, origin_fog, pile_id, status, expires_at)
-                        VALUES (?, ?, ?, ?, 'ACTIVE', '2099-01-01T00:00:00')
-                    """, (hold_id, f"req-{v_id}", requesting_fog, pile["pile_id"]))
+                try:
+                    with sqlite3.connect(peer_db) as conn:
+                        conn.row_factory = sqlite3.Row
+                        piles = conn.execute("""
+                            SELECT pile_id, power_kw
+                            FROM piles
+                            WHERE status = 'AVAILABLE' AND is_reservable = 1
+                            ORDER BY power_kw DESC
+                            LIMIT ?
+                        """, (to_transfer,)).fetchall()
 
-                    self.active_sessions.append({
-                        "session_id": hold_id,
-                        "vehicle_id": v_id,
-                        "fog_id": chosen_peer,
-                        "pile_id": pile["pile_id"],
-                        "power_kw": pile["power_kw"],
-                        "start_tick": tick,
-                        "end_tick": tick + duration,
-                        "transferred_from": requesting_fog,
-                    })
+                        if len(piles) < to_transfer:
+                            # S3 HOLD failure / conflict: candidate has fewer available piles than expected
+                            self.log_event(
+                                "HOLD_FAILOVER",
+                                f"Échec HOLD partiel / Conflit ({peer_id.upper()})",
+                                f"Capacité réduite ({len(piles)}/{to_transfer}) sur {peer_id.upper()}. Basculement vers le Fog candidat suivant.",
+                                "warning"
+                            )
 
-                conn.commit()
+                        for i, pile in enumerate(piles):
+                            v_id = batch_vehicles[i]
+                            hold_id = f"v7-trans-{tick}-{v_id}"
+                            duration = random.randint(4, 9)
 
-            self.total_cooperations += to_transfer
-            self.log_event(
-                "COOPERATION_V7",
-                f"Coopération V7 Réussie ({requesting_fog.upper()} -> {chosen_peer.upper()})",
-                f"{to_transfer} véhicule(s) transférés et activés sur {chosen_peer.upper()} [HOLD -> CONFIRM -> ACTIVATE].",
-                "success"
-            )
+                            # Mark pile OCCUPIED and reservation ACTIVE
+                            conn.execute("UPDATE piles SET status = 'OCCUPIED' WHERE pile_id = ?", (pile["pile_id"],))
+                            conn.execute("""
+                                INSERT INTO reservations (hold_id, request_id, origin_fog, pile_id, status, expires_at)
+                                VALUES (?, ?, ?, ?, 'ACTIVE', '2099-01-01T00:00:00')
+                            """, (hold_id, f"req-{v_id}", requesting_fog, pile["pile_id"]))
 
-            # Remaining unserved
-            remaining_unserved = needed - to_transfer
-            if remaining_unserved > 0:
-                self.total_unserved += remaining_unserved
+                            self.active_sessions.append({
+                                "session_id": hold_id,
+                                "vehicle_id": v_id,
+                                "fog_id": peer_id,
+                                "pile_id": pile["pile_id"],
+                                "power_kw": pile["power_kw"],
+                                "start_tick": tick,
+                                "end_tick": tick + duration,
+                                "transferred_from": requesting_fog,
+                            })
+                            allocated_count += 1
+
+                        conn.commit()
+
+                    if allocated_count > 0:
+                        transferred_total += allocated_count
+                        remaining_vehicles = remaining_vehicles[allocated_count:]
+                        self.total_cooperations += allocated_count
+                        failover_tag = f" [Basculement S3 candidat #{candidate_idx + 1}]" if candidate_idx > 0 else ""
+                        self.log_event(
+                            "COOPERATION_V7",
+                            f"Coopération V7 Réussie ({requesting_fog.upper()} -> {peer_id.upper()}){failover_tag}",
+                            f"{allocated_count} véhicule(s) transférés et activés sur {peer_id.upper()} [HOLD -> CONFIRM -> ACTIVATE].",
+                            "success"
+                        )
+
+                except Exception as e:
+                    self.log_event(
+                        "HOLD_FAILED",
+                        f"Échec HOLD distant ({peer_id.upper()})",
+                        f"Erreur de réservation sur {peer_id.upper()}: {e}. Basculement automatique (Scénario 3).",
+                        "error"
+                    )
+
+            if remaining_vehicles:
+                unserved_count = len(remaining_vehicles)
+                self.total_unserved += unserved_count
                 self.log_event(
                     "PARTIAL_UNSERVED",
                     f"Véhicules non servis ({requesting_fog.upper()})",
-                    f"{remaining_unserved} véhicule(s) n'ont pas pu être transférés faute de bornes suffisantes.",
+                    f"{unserved_count} véhicule(s) n'ont pas pu être transférés (échec ou saturation de tous les Fogs candidats).",
                     "error"
                 )
 
@@ -377,6 +458,7 @@ class RealTimeSimulator:
             self.total_completed = 0
             self.total_cooperations = 0
             self.total_unserved = 0
+            self._last_ml_predictions.clear()
             self.log_event("SYSTEM", "Réinitialisation", "Toutes les bases de données ont été remises à zéro (100% disponibles).", "info")
 
     def start(self, interval_sec: float = 2.0):
@@ -411,6 +493,14 @@ class RealTimeSimulator:
                 "total_completed": self.total_completed,
                 "total_cooperations": self.total_cooperations,
                 "total_unserved": self.total_unserved,
+                # S7: expose the last raw Chronos-2 (or baseline) predictions
+                "ml_predictions": {
+                    fog_id: {
+                        "busy_forecast": v,
+                        "source": "chronos-2" if v is not None else "unavailable",
+                    }
+                    for fog_id, v in self._last_ml_predictions.items()
+                },
                 "capacities": capacities,
                 "recent_events": self.events[:25],
                 "active_sessions": self.active_sessions[-10:],
@@ -419,3 +509,4 @@ class RealTimeSimulator:
 
 # Singleton engine instance
 engine = RealTimeSimulator()
+

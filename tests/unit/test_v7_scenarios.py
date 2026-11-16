@@ -8,6 +8,7 @@ import sqlite3
 import uuid
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -202,10 +203,204 @@ class TestScenario1LocalSession:
         assert exc_info.value.status_code == 409
 
 
+
+# ===========================================================================
+# Scénario 3 — Réservation temporaire distante (HOLD) avec gestion d'échec
+# ===========================================================================
+
+class TestScenario3HoldFailureAndFailover:
+
+    def test_s3_hold_failover_to_second_candidate_when_primary_conflicts(self, isolated_db, monkeypatch):
+        """
+        Scenario 3: Fog B requests help. Both Fog A (5 piles) and Fog C (3 piles) propose.
+        Fog A is selected as rank #1, but its /reservations/hold returns HTTP 409 Conflict
+        (e.g., local vehicle arrived at Fog A simultaneously).
+        The system automatically falls back to candidate #2 (Fog C), securing the HOLD.
+        """
+        import fog.services.peer_communication_service as peer_svc
+        monkeypatch.setattr(peer_svc, "FOG_ID", "fog-b")
+
+        def fake_post(url, **kwargs):
+            mock_resp = MagicMock()
+            url_str = str(url)
+
+            # Help request queries
+            if "help-requests" in url_str:
+                if "8001" in url_str:  # fog-a (5 piles, 250 kW)
+                    mock_resp.status_code = 200
+                    mock_resp.json.return_value = {
+                        "request_id": "req-s3-01", "origin_fog": "fog-b", "proposer_fog": "fog-a",
+                        "zone": "university", "status": "PROPOSAL", "available_piles": 5, "available_power_kw": 250.0,
+                        "reason": "Sufficient capacity"
+                    }
+                    mock_resp.raise_for_status = MagicMock()
+                    return mock_resp
+                elif "8003" in url_str:  # fog-c (3 piles, 150 kW)
+                    mock_resp.status_code = 200
+                    mock_resp.json.return_value = {
+                        "request_id": "req-s3-01", "origin_fog": "fog-b", "proposer_fog": "fog-c",
+                        "zone": "public_parking", "status": "PROPOSAL", "available_piles": 3, "available_power_kw": 150.0,
+                        "reason": "Sufficient capacity"
+                    }
+                    mock_resp.raise_for_status = MagicMock()
+                    return mock_resp
+
+            # HOLD requests
+            if "reservations/hold" in url_str:
+                if "8001" in url_str:  # Fog A fails with 409 Conflict
+                    mock_resp.status_code = 409
+                    mock_resp.json.return_value = {"detail": "Insufficient available capacity for this reservation."}
+                    err = httpx.HTTPStatusError("409 Conflict", request=MagicMock(), response=mock_resp)
+                    mock_resp.raise_for_status.side_effect = err
+                    raise err
+                elif "8003" in url_str:  # Fog C succeeds
+                    mock_resp.status_code = 200
+                    mock_resp.json.return_value = {
+                        "hold_id": "hold-c-success-123",
+                        "request_id": "req-s3-01",
+                        "origin_fog": "fog-b",
+                        "proposer_fog": "fog-c",
+                        "pile_ids": ["fog-c-P01", "fog-c-P02"],
+                        "status": "HOLD",
+                        "expires_at": "2099-01-01T00:02:00"
+                    }
+                    mock_resp.raise_for_status = MagicMock()
+                    return mock_resp
+
+            raise RuntimeError(f"Unexpected URL: {url_str}")
+
+        with patch("httpx.post", side_effect=fake_post):
+            request = HelpRequest(
+                request_id="req-s3-01",
+                origin_fog="fog-b",
+                required_piles=2,
+                required_power_kw=80.0,
+            )
+            result = send_help_request_to_peers(request)
+
+        # Assert failover succeeded
+        assert result["status"] == "HOLD_GRANTED"
+        assert result["selected_proposal"] is not None
+        assert result["selected_proposal"]["proposer_fog"] == "fog-c"
+        assert result["hold"]["hold_id"] == "hold-c-success-123"
+        assert result["failover_count"] == 1
+        assert len(result["errors"]) == 1
+        assert result["errors"][0]["peer_fog"] == "fog-a"
+        assert result["errors"][0]["status_code"] == 409
+
+    def test_s3_hold_failover_when_primary_has_timeout(self, isolated_db, monkeypatch):
+        """
+        Scenario 3: Primary Fog A times out during /hold request.
+        System fails over automatically to Fog C.
+        """
+        import fog.services.peer_communication_service as peer_svc
+        monkeypatch.setattr(peer_svc, "FOG_ID", "fog-b")
+
+        def fake_post(url, **kwargs):
+            mock_resp = MagicMock()
+            url_str = str(url)
+
+            if "help-requests" in url_str:
+                mock_resp.status_code = 200
+                fog_name = "fog-a" if "8001" in url_str else "fog-c"
+                piles = 5 if "8001" in url_str else 3
+                mock_resp.json.return_value = {
+                    "request_id": "req-s3-timeout", "origin_fog": "fog-b", "proposer_fog": fog_name,
+                    "zone": "zone", "status": "PROPOSAL", "available_piles": piles, "available_power_kw": 100.0,
+                    "reason": "OK"
+                }
+                mock_resp.raise_for_status = MagicMock()
+                return mock_resp
+
+            if "reservations/hold" in url_str:
+                if "8001" in url_str:
+                    raise httpx.ReadTimeout("Connection to fog-a timed out")
+                elif "8003" in url_str:
+                    mock_resp.status_code = 200
+                    mock_resp.json.return_value = {
+                        "hold_id": "hold-c-timeout-failover",
+                        "request_id": "req-s3-timeout",
+                        "origin_fog": "fog-b",
+                        "proposer_fog": "fog-c",
+                        "pile_ids": ["fog-c-P01"],
+                        "status": "HOLD",
+                        "expires_at": "2099-01-01T00:02:00"
+                    }
+                    mock_resp.raise_for_status = MagicMock()
+                    return mock_resp
+
+            raise RuntimeError(f"Unexpected URL: {url_str}")
+
+        with patch("httpx.post", side_effect=fake_post):
+            request = HelpRequest(
+                request_id="req-s3-timeout",
+                origin_fog="fog-b",
+                required_piles=1,
+                required_power_kw=40.0,
+            )
+            result = send_help_request_to_peers(request)
+
+        assert result["status"] == "HOLD_GRANTED"
+        assert result["selected_proposal"]["proposer_fog"] == "fog-c"
+        assert result["hold"]["hold_id"] == "hold-c-timeout-failover"
+        assert result["failover_count"] == 1
+        assert "timed out" in result["errors"][0]["error"].lower()
+
+    def test_s3_all_candidates_fail_hold_graceful_rejection(self, isolated_db, monkeypatch):
+        """
+        Scenario 3: Both Fog A and Fog C return 409 Conflict upon HOLD request.
+        System exhausts all candidates, marks cooperation status as ALL_HOLDS_FAILED,
+        and returns hold=None and selected_proposal=None without phantom locks.
+        """
+        import fog.services.peer_communication_service as peer_svc
+        monkeypatch.setattr(peer_svc, "FOG_ID", "fog-b")
+
+        def fake_post(url, **kwargs):
+            mock_resp = MagicMock()
+            url_str = str(url)
+
+            if "help-requests" in url_str:
+                fog_name = "fog-a" if "8001" in url_str else "fog-c"
+                mock_resp.status_code = 200
+                mock_resp.json.return_value = {
+                    "request_id": "req-s3-all-fail", "origin_fog": "fog-b", "proposer_fog": fog_name,
+                    "zone": "zone", "status": "PROPOSAL", "available_piles": 3, "available_power_kw": 100.0,
+                    "reason": "OK"
+                }
+                mock_resp.raise_for_status = MagicMock()
+                return mock_resp
+
+            if "reservations/hold" in url_str:
+                mock_resp.status_code = 409
+                mock_resp.json.return_value = {"detail": "Insufficient available capacity."}
+                err = httpx.HTTPStatusError("409 Conflict", request=MagicMock(), response=mock_resp)
+                mock_resp.raise_for_status.side_effect = err
+                raise err
+
+            raise RuntimeError(f"Unexpected URL: {url_str}")
+
+        with patch("httpx.post", side_effect=fake_post):
+            request = HelpRequest(
+                request_id="req-s3-all-fail",
+                origin_fog="fog-b",
+                required_piles=2,
+                required_power_kw=80.0,
+            )
+            result = send_help_request_to_peers(request)
+
+        assert result["status"] == "ALL_HOLDS_FAILED"
+        assert result["selected_proposal"] is None
+        assert result["hold"] is None
+        assert len(result["errors"]) == 2
+        assert set(result["attempted_fogs"]) == {"fog-a", "fog-c"}
+
+
+
 # ===========================================================================
 # Scénario 4 — Transfert et activation des sessions distantes (V7 Complet)
 # Protocol: HOLD -> CONFIRM -> ACTIVATE -> COMPLETED
 # ===========================================================================
+
 
 class TestScenario4LifecycleV7:
 

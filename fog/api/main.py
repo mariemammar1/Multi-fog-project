@@ -9,6 +9,7 @@ from fog.api.cooperation import router as cooperation_router
 from fog.api.reservations import router as reservations_router
 from fog.api.piles import router as piles_router
 from fog.api.simulator import router as simulator_router
+from fog.api.round import router as round_router
 from simulator.realtime_engine import engine
 
 
@@ -32,6 +33,7 @@ app.include_router(reservations_router)
 app.include_router(piles_router)
 app.include_router(forecast_router)
 app.include_router(simulator_router)
+app.include_router(round_router)
 
 
 @app.get("/health")

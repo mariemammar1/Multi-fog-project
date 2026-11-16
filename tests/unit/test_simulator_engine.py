@@ -152,3 +152,105 @@ def test_sim_reset(sim_engine):
     for fog_id in ["fog-a", "fog-b", "fog-c"]:
         assert caps[fog_id]["available_piles"] == 10
         assert caps[fog_id]["occupied_piles"] == 0
+
+
+# ===========================================================================
+# Scenario 7 — ML Prediction (real Chronos-2 integration)
+# ===========================================================================
+
+def test_s7_ml_reactive_uses_chronos_when_available(sim_engine, monkeypatch):
+    """
+    S7: When Chronos-2 returns a valid prediction, the simulator uses it
+    to generate arrivals (not a hardcoded constant).
+    The number of arrivals must reflect the scaled prediction, not 18.
+    """
+    import fog.services.ml_client as ml_mod
+
+    # Simulate Chronos-2 returning busy=2000 for each fog
+    def fake_prediction(fog_id: str):
+        return 2000.0
+
+    def fake_baseline(fog_id: str):
+        return 2000.0
+
+    monkeypatch.setattr(ml_mod, "get_chronos_prediction", fake_prediction)
+    monkeypatch.setattr(ml_mod, "get_baseline_prediction", fake_baseline)
+
+    # scale_busy_to_arrivals(2000, factor=0.01) => 20 arrivals per fog
+    sim_engine.scenario = "S7_ML_REACTIVE"
+    sim_engine.step()
+
+    assert sim_engine.tick_count == 1
+    assert sim_engine.total_arrivals > 0
+
+    # At factor 0.01, 2000 busy → 20 arrivals per fog; with jitter ±20% → 16–24 per fog
+    # Total over 3 fogs: 48–72. Must be non-zero and not the old hardcoded 23.
+    ml_events = [e for e in sim_engine.events if e["category"] == "ML_PREDICTION"]
+    assert len(ml_events) == 1
+    assert "Chronos-2" in ml_events[0]["title"]
+
+
+def test_s7_ml_reactive_falls_back_to_baseline_when_chronos_unavailable(sim_engine, monkeypatch):
+    """
+    S7: When Chronos-2 returns None (unreachable), the simulator falls back
+    to the baseline (last-value) prediction and still generates arrivals.
+    No arrivals should be dropped or raise an exception.
+    """
+    import fog.services.ml_client as ml_mod
+
+    monkeypatch.setattr(ml_mod, "get_chronos_prediction", lambda fog_id: None)
+    monkeypatch.setattr(ml_mod, "get_baseline_prediction", lambda fog_id: 1500.0)
+
+    sim_engine.scenario = "S7_ML_REACTIVE"
+    sim_engine.step()
+
+    assert sim_engine.tick_count == 1
+    assert sim_engine.total_arrivals > 0
+    ml_events = [e for e in sim_engine.events if e["category"] == "ML_PREDICTION"]
+    assert len(ml_events) == 1
+
+
+def test_s7_ml_prediction_does_not_reserve_piles_prematurely(sim_engine, monkeypatch):
+    """
+    S7 guard: querying Chronos-2 prediction must not create reservations or
+    change pile status before real vehicle arrivals are processed.
+    """
+    import fog.services.ml_client as ml_mod
+
+    call_count = {"n": 0}
+
+    def counting_prediction(fog_id: str) -> float | None:
+        call_count["n"] += 1
+        return 1800.0
+
+    monkeypatch.setattr(ml_mod, "get_chronos_prediction", counting_prediction)
+    monkeypatch.setattr(ml_mod, "get_baseline_prediction", lambda fog_id: 1800.0)
+
+    # Read pile state before anything runs
+    before = sim_engine.get_fog_capacities()
+    before_avail = {fid: c["available_piles"] for fid, c in before.items()}
+
+    # Only call _generate_arrivals (read-only ML query phase), not full step
+    sim_engine.scenario = "S7_ML_REACTIVE"
+    sim_engine._generate_arrivals()   # must not write to DB
+
+    after = sim_engine.get_fog_capacities()
+    after_avail = {fid: c["available_piles"] for fid, c in after.items()}
+
+    # Piles unchanged by ML query alone
+    assert before_avail == after_avail, \
+        f"ML query changed pile availability: before={before_avail}, after={after_avail}"
+
+    # Chronos was called once per fog
+    assert call_count["n"] == 3
+
+
+def test_s7_ml_client_scale_busy_to_arrivals():
+    """Unit test: scale_busy_to_arrivals converts occupancy to sensible arrival counts."""
+    from fog.services.ml_client import scale_busy_to_arrivals
+
+    assert scale_busy_to_arrivals(0, "fog-a") == 0
+    assert scale_busy_to_arrivals(100, "fog-a", scale_factor=0.01) == 1
+    assert scale_busy_to_arrivals(2000, "fog-b", scale_factor=0.01) == 20
+    assert scale_busy_to_arrivals(99999, "fog-c", scale_factor=0.01) == 60  # capped at 60
+

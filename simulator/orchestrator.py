@@ -6,9 +6,14 @@ Implements the PREPARE / SETTLE round protocol:
   SETTLE:  After a global barrier (all Fogs ready for the same tick),
            inter-Fog cooperation decisions are made for unserved vehicles.
 
-In production, communication would use real HTTP calls to peer Fog nodes.
-In tests, the orchestrator operates on in-memory FogNode objects directly.
+Two orchestrator implementations are provided:
+  1. RoundOrchestrator: In-memory simulation over FogNodeState objects for fast unit tests.
+  2. DistributedRoundOrchestrator: Real HTTP-based orchestrator coordinating independent
+     Fog processes over the network (/api/v1/round/prepare and /api/v1/round/settle).
 """
+
+import httpx
+
 
 
 class FogNodeState:
@@ -158,3 +163,147 @@ class RoundOrchestrator:
 
         self.history.append(summary)
         return summary
+
+
+class DistributedRoundOrchestrator:
+    """
+    Coordinates the PREPARE / SETTLE cycle across multiple independent Fog processes
+    communicating via real HTTP calls to the /api/v1/round/* endpoints.
+
+    Parameters
+    ----------
+    fog_urls : dict[str, str]
+        Mapping of fog_id to its base HTTP URL (e.g. {"fog-a": "http://127.0.0.1:8001", ...}).
+    client : httpx.Client, optional
+        Custom HTTP client (can be an in-process ASGITransport or test client).
+    """
+
+    def __init__(self, fog_urls: dict[str, str], client: httpx.Client | None = None):
+        self.fog_urls = fog_urls
+        self.current_tick = 0
+        self.history: list[dict] = []
+        self._client = client or httpx.Client(timeout=10.0)
+
+    def run_round(
+        self,
+        arrivals: dict[str, list[dict | str]],       # fog_id -> list of vehicle_ids or {vehicle_id, required_power_kw}
+        completions: dict[str, list[str]],          # fog_id -> list of hold_ids
+        ml_predictions: dict[str, int] | None = None,
+    ) -> dict:
+        self.current_tick += 1
+        tick = self.current_tick
+
+        # --- Phase 1: PREPARE Barrier ---
+        prepare_results: dict[str, dict] = {}
+        for fog_id, url in self.fog_urls.items():
+            fog_arrivals = arrivals.get(fog_id, [])
+            fog_completions = completions.get(fog_id, [])
+
+            formatted_arrivals = [
+                {"vehicle_id": v, "required_power_kw": 22.0} if isinstance(v, str) else v
+                for v in fog_arrivals
+            ]
+
+            resp = self._client.post(
+                f"{url}/api/v1/round/prepare",
+                json={
+                    "tick": tick,
+                    "arrivals": formatted_arrivals,
+                    "completions": fog_completions,
+                },
+            )
+            resp.raise_for_status()
+            prepare_results[fog_id] = resp.json()
+
+        # Enforce global barrier: all independent Fog processes must reach the same tick
+        ticks = {fid: res["tick"] for fid, res in prepare_results.items()}
+        assert len(set(ticks.values())) == 1, f"Barrier tick mismatch across Fogs: {ticks}"
+        assert all(res["status"] == "PREPARED" for res in prepare_results.values()), "Not all Fogs PREPARED"
+
+        # --- Phase 2: SETTLE Phase ---
+        all_unserved: dict[str, list[str]] = {
+            fog_id: list(res.get("unserved_vehicles", []))
+            for fog_id, res in prepare_results.items()
+        }
+        capacities: dict[str, int] = {
+            fog_id: res.get("available_piles", 0)
+            for fog_id, res in prepare_results.items()
+        }
+
+        transfers: list[dict] = []
+        cooperation_triggered = False
+
+        for fog_id, unserved_list in all_unserved.items():
+            if not unserved_list:
+                continue
+
+            # Find peer with most available capacity
+            best_peer_id = None
+            best_cap = 0
+            for peer_id, cap in capacities.items():
+                if peer_id == fog_id:
+                    continue
+                if cap >= len(unserved_list) and cap > best_cap:
+                    best_peer_id = peer_id
+                    best_cap = cap
+
+            if best_peer_id is not None:
+                peer_url = self.fog_urls[best_peer_id]
+                transfer_payload = [
+                    {"vehicle_id": v_id, "required_power_kw": 22.0, "station_id": fog_id}
+                    for v_id in unserved_list
+                ]
+                settle_resp = self._client.post(
+                    f"{peer_url}/api/v1/round/settle",
+                    json={
+                        "tick": tick,
+                        "remote_transfers": transfer_payload,
+                        "trigger_cooperation": False,
+                    },
+                )
+                settle_resp.raise_for_status()
+                settle_data = settle_resp.json()
+                accepted = [s["vehicle_id"] for s in settle_data.get("accepted_transfers", [])]
+
+                if accepted:
+                    cooperation_triggered = True
+                    transfers.append({
+                        "from_fog": fog_id,
+                        "to_fog": best_peer_id,
+                        "vehicles": accepted,
+                    })
+                    for v in accepted:
+                        all_unserved[fog_id].remove(v)
+                    capacities[best_peer_id] = settle_data.get("available_piles", 0)
+
+        # Notify remaining fogs to settle
+        fog_states = {}
+        for fog_id, url in self.fog_urls.items():
+            settle_resp = self._client.post(
+                f"{url}/api/v1/round/settle",
+                json={
+                    "tick": tick,
+                    "remote_transfers": [],
+                    "trigger_cooperation": False,
+                },
+            )
+            settle_resp.raise_for_status()
+            s_data = settle_resp.json()
+            fog_states[fog_id] = {
+                "available": s_data.get("available_piles", 0),
+                "occupied": s_data.get("occupied_piles", 0),
+            }
+
+        total_unserved = sum(len(v) for v in all_unserved.values())
+        summary = {
+            "tick": tick,
+            "unserved": all_unserved,
+            "total_unserved": total_unserved,
+            "transfers": transfers,
+            "cooperation_triggered": cooperation_triggered,
+            "ml_predictions": ml_predictions or {},
+            "fog_states": fog_states,
+        }
+        self.history.append(summary)
+        return summary
+

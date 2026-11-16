@@ -1,5 +1,5 @@
 
-from fog.services.proposal_selection_service import select_best_proposal
+from fog.services.proposal_selection_service import rank_proposals, select_best_proposal
 
 
 def test_select_best_proposal():
@@ -106,6 +106,34 @@ def test_selects_proposal_with_highest_station_count():
     assert result["proposer_fog"] == "fog-c"
 
 
+def test_rank_proposals_returns_ordered_candidates():
+    """Verify rank_proposals returns all qualifying candidates in descending order."""
+    responses = [
+        {"status": "PROPOSAL", "proposer_fog": "fog-a", "available_piles": 2, "available_power_kw": 50},
+        {"status": "PROPOSAL", "proposer_fog": "fog-c", "available_piles": 5, "available_power_kw": 120},
+        {"status": "PROPOSAL", "proposer_fog": "fog-d", "available_piles": 3, "available_power_kw": 80},
+        {"status": "DECLINE", "proposer_fog": "fog-e", "available_piles": 10, "available_power_kw": 200},
+    ]
+
+    ranked = rank_proposals(responses, required_piles=2, required_power_kw=40)
+    assert len(ranked) == 3
+    assert [p["proposer_fog"] for p in ranked] == ["fog-c", "fog-d", "fog-a"]
+
+
+def test_rank_proposals_filters_out_insufficient():
+    """Verify rank_proposals ignores candidates not meeting minimum requirements."""
+    responses = [
+        {"status": "PROPOSAL", "proposer_fog": "fog-a", "available_piles": 1, "available_power_kw": 50},
+        {"status": "PROPOSAL", "proposer_fog": "fog-c", "available_piles": 4, "available_power_kw": 20},  # power too low
+        {"status": "PROPOSAL", "proposer_fog": "fog-d", "available_piles": 4, "available_power_kw": 90},
+    ]
+
+    ranked = rank_proposals(responses, required_piles=2, required_power_kw=40)
+    assert len(ranked) == 1
+    assert ranked[0]["proposer_fog"] == "fog-d"
+
+
+
 def test_uses_power_as_secondary_ranking():
     responses = [
         {
@@ -125,3 +153,31 @@ def test_uses_power_as_secondary_ranking():
     result = select_best_proposal(responses, 2, 40)
 
     assert result["proposer_fog"] == "fog-c"
+
+
+def test_rank_proposals_returns_ordered_candidates():
+    """Verify rank_proposals returns all qualifying candidates in descending order."""
+    responses = [
+        {"status": "PROPOSAL", "proposer_fog": "fog-a", "available_piles": 2, "available_power_kw": 50},
+        {"status": "PROPOSAL", "proposer_fog": "fog-c", "available_piles": 5, "available_power_kw": 120},
+        {"status": "PROPOSAL", "proposer_fog": "fog-d", "available_piles": 3, "available_power_kw": 80},
+        {"status": "DECLINE", "proposer_fog": "fog-e", "available_piles": 10, "available_power_kw": 200},
+    ]
+
+    ranked = rank_proposals(responses, required_piles=2, required_power_kw=40)
+    assert len(ranked) == 3
+    assert [p["proposer_fog"] for p in ranked] == ["fog-c", "fog-d", "fog-a"]
+
+
+def test_rank_proposals_filters_out_insufficient():
+    """Verify rank_proposals ignores candidates not meeting minimum requirements."""
+    responses = [
+        {"status": "PROPOSAL", "proposer_fog": "fog-a", "available_piles": 1, "available_power_kw": 50},
+        {"status": "PROPOSAL", "proposer_fog": "fog-c", "available_piles": 4, "available_power_kw": 20},  # power too low
+        {"status": "PROPOSAL", "proposer_fog": "fog-d", "available_piles": 4, "available_power_kw": 90},
+    ]
+
+    ranked = rank_proposals(responses, required_piles=2, required_power_kw=40)
+    assert len(ranked) == 1
+    assert ranked[0]["proposer_fog"] == "fog-d"
+
